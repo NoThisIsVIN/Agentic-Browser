@@ -40,10 +40,11 @@ if user_command := st.chat_input("E.g., Search Wikipedia for the release date of
         with st.status("Agent Deployed to the Web...", expanded=True) as status:
             st.write("Booting Playwright and connecting to Gemini API...")
             
-            # --- THE FIX: The Callback Function ---
-            # This function catches the thoughts from main.py and prints them live
-            def stream_to_ui(message):
+            # --- THE UPGRADED CALLBACK FUNCTION ---
+            def stream_to_ui(message, image_bytes=None):
                 st.markdown(message)
+                if image_bytes:
+                    st.image(image_bytes, caption="What the AI sees", use_container_width=True)
             # --------------------------------------
             
             # THIS IS THE MAGIC LINE. We now pass the ui_callback so the agent can talk back to the UI.

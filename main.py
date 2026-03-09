@@ -14,8 +14,6 @@ from schema import AgentOutput
 
 async def get_dom_snapshot(page, deep_read=False):
     """Dynamically switches between fast navigation and deep reading."""
-    
-    # Toggle the JavaScript parameters based on the mode
     if deep_read:
         selectors = 'button, a, input, [role="button"], textarea, h3, p, li, [contenteditable="true"]'
         max_chars = 1000
@@ -25,9 +23,13 @@ async def get_dom_snapshot(page, deep_read=False):
         max_chars = 100
         max_elements = 80
 
-    # We use Python f-strings to inject those variables into the JS code
     js_code = f"""
     () => {{
+        let oldElements = document.querySelectorAll('[data-agent-id]');
+        for (let oldEl of oldElements) {{
+            oldEl.removeAttribute('data-agent-id');
+        }}
+        
         let elements = document.querySelectorAll('{selectors}');
         let simplifiedDOM = [];
         let maxElements = {max_elements};
@@ -62,7 +64,6 @@ async def get_dom_snapshot(page, deep_read=False):
     return await page.evaluate(js_code)
 
 
-# --- THE FIX 1: Added ui_callback parameter ---
 async def run_agent(user_objective, ui_callback=None):
     client = genai.Client()
     
@@ -85,39 +86,56 @@ async def run_agent(user_objective, ui_callback=None):
         action_history = [] 
         final_report = "Task failed or timed out."
         
-        # State tracker for deep reading
+        # --- State Trackers ---
         needs_deep_read = False 
+        needs_vision = False
+        # ----------------------
         
         while step_count < 10:
-            # Pass the state flag and instantly reset it
             dom_data = await get_dom_snapshot(page, deep_read=needs_deep_read)
             needs_deep_read = False 
             
+            # --- THE NEW SYSTEM PROMPT ARCHITECTURE ---
             prompt = f"""
-            Goal: {user_objective}
+            # SYSTEM INSTRUCTIONS
+            You are an elite autonomous web agent. Your job is to achieve the user's objective by navigating the web, extracting information, and taking actions. 
             
+            # YOUR TOOLKIT RULES
+            1. Navigation: Use "goto" to open a URL. Use "scroll" to move up or down.
+            2. Interaction: Use "click" and "type" using the provided element IDs from the JSON. Use "press" for keyboard keys.
+            3. Reading: The JSON provides basic text. If text is hidden in paragraphs, use "read".
+            4. VISION (CRITICAL): If you need to solve a visual problem (like a math formula, an image, or a complex NPTEL diagram) that is NOT readable in the JSON, use the "look" tool to take a screenshot. ONLY use "look" if you are completely stuck and cannot answer the user's question with the JSON data alone.
+            5. Completion: When the goal is met, use "finish" and provide the final answer in the reason field.
+            
+            # CONTEXT
             Past Actions Taken (DO NOT REPEAT THESE):
             {json.dumps(action_history, indent=2)}
             
-            Current Screen Elements:
+            Current Screen Elements (JSON):
             {json.dumps(dom_data, indent=2)}
             
-            You have a new action: "goto". If you are on a blank page or need to jump to a specific website to achieve the goal, use the "goto" action and provide the full "url" (e.g., https://www.amazon.com).
+            # USER OBJECTIVE
+            Goal: {user_objective}
             
-            You have a new action: "read". If you have reached a page with the final information but cannot see the paragraph text in the Current Screen Elements, output the "read" action. This will trigger a deep scan of the page's paragraphs on your next turn so you can extract the data.
-            
-            CRITICAL INSTRUCTION FOR FINISHING:
-            If the user's goal requires returning information (e.g., "return the results", "find the price", "summarize"), you MUST read the text from the Current Screen Elements, extract the actual answer, and write the full answer into the 'reason' field of your 'finish' action. 
-            DO NOT just say "the results are displayed." Actually provide the data!
-            
-            CRUCIAL JSON RULE: DO NOT use literal newlines in your JSON output. If you need a newline in the 'reason' string, you MUST use the escaped characters '\\n'.
-            
-            What is your next logical step?
+            What is your next logical step? Output strictly matching the Pydantic schema.
             """
+            
+            # --- THE ON-DEMAND VISION INJECTION ---
+            contents_payload = [prompt]
+            screenshot_bytes = None
+            
+            if needs_vision:
+                print("📸 Snapping photo for AI...")
+                screenshot_bytes = await page.screenshot()
+                # Append the image to the payload
+                contents_payload[0] = prompt + "\n\nVISION MODULE ACTIVE: A screenshot of the current page is attached. Analyze the image to find the unextractable data."
+                contents_payload.append(types.Part.from_bytes(data=screenshot_bytes, mime_type='image/png'))
+                needs_vision = False # Turn the camera back off
+            # --------------------------------------
             
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=prompt,
+                contents=contents_payload,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=AgentOutput, 
@@ -134,13 +152,16 @@ async def run_agent(user_objective, ui_callback=None):
                     
                 ai_decision = json.loads(raw_text)
                 action_type = ai_decision["command"]["action"]
-                
-                # --- THE FIX 2: Send thoughts to the UI! ---
                 thought = ai_decision.get("thought", "Thinking...")
+                
                 if ui_callback:
-                    ui_callback(f"🧠 **Thought:** {thought}")
+                    # Only send image to UI if we actually took one this turn!
+                    if screenshot_bytes:
+                        ui_callback(f"🧠 **Thought:** {thought}", image_bytes=screenshot_bytes)
+                    else:
+                        ui_callback(f"🧠 **Thought:** {thought}")
+                        
                     ui_callback(f"⚙️ **Action:** `{action_type}`")
-                # -------------------------------------------
                 
             except Exception as e:
                 print(f"❌ JSON Parse Error: {e}")
@@ -153,46 +174,76 @@ async def run_agent(user_objective, ui_callback=None):
                 final_report = ai_decision['command']['reason']
                 break
                 
-            # --- Handle the READ action ---
-            if action_type == "read":
-                print("-> AI requested a deep read of the page.")
+            elif action_type == "read":
                 needs_deep_read = True
-                action_history.append("Triggered a deep read to expose paragraph text.")
+                action_history.append("Triggered a deep read.")
                 step_count += 1
                 await asyncio.sleep(2) 
                 continue
                 
-            if action_type == "goto":
+            # --- THE NEW LOOK ACTION ---
+            elif action_type == "look":
+                needs_vision = True
+                action_history.append("Triggered the camera to look at the screen.")
+                step_count += 1
+                await asyncio.sleep(2)
+                continue
+            # ---------------------------
+                
+            elif action_type == "goto":
                 target_url = ai_decision["command"]["url"]
                 if not target_url.startswith("http"):
                     target_url = "https://" + target_url
-                print(f"-> AI requested direct navigation to: {target_url}")
                 await page.goto(target_url)
-                action_history.append(f"Navigated directly to {target_url}")
-                
+                action_history.append(f"Navigated to {target_url}")
                 step_count += 1
                 await asyncio.sleep(8)
                 continue
+                
+            elif action_type == "scroll":
+                direction = ai_decision["command"]["direction"]
+                if direction == "down":
+                    await page.mouse.wheel(0, 800)
+                    action_history.append("Scrolled down")
+                else:
+                    await page.mouse.wheel(0, -800)
+                    action_history.append("Scrolled up")
+                step_count += 1
+                await asyncio.sleep(2)
+                continue
+                
+            elif action_type == "press":
+                key = ai_decision["command"]["key"]
+                await page.keyboard.press(key)
+                action_history.append(f"Pressed '{key}'")
+                step_count += 1
+                await asyncio.sleep(2)
+                continue
             
-            element_id = ai_decision["command"]["element_id"]
-            target_locator = page.locator(f'[data-agent-id="{element_id}"]')
-            
-            if action_type == "type":
+            elif action_type == "type":
+                element_id = ai_decision["command"]["element_id"]
+                target_locator = page.locator(f'[data-agent-id="{element_id}"]').first
                 text_to_type = ai_decision["command"]["text"]
-                # Emulate rapid human typing to bypass React/ChatGPT UI blocks
-                await target_locator.click()
+                try:
+                    await target_locator.click(timeout=3000)
+                except Exception:
+                    await target_locator.evaluate("node => node.click()")
+                
                 await page.keyboard.type(text_to_type, delay=10) 
                 await page.keyboard.press("Enter") 
-                action_history.append(f"Typed '{text_to_type}' into element ID {element_id} and hit Enter")
-                
-                # Wait for ChatGPT to finish its generation
+                action_history.append(f"Typed '{text_to_type}' into ID {element_id}")
                 step_count += 1
                 await asyncio.sleep(20) 
                 continue
                 
             elif action_type == "click":
-                await target_locator.click()
-                action_history.append(f"Clicked element ID {element_id}")
+                element_id = ai_decision["command"]["element_id"]
+                target_locator = page.locator(f'[data-agent-id="{element_id}"]').first
+                try:
+                    await target_locator.click(timeout=3000)
+                except Exception:
+                    await target_locator.evaluate("node => node.click()")
+                action_history.append(f"Clicked ID {element_id}")
             
             step_count += 1
             await asyncio.sleep(5) 

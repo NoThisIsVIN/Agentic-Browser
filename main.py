@@ -86,16 +86,14 @@ async def run_agent(user_objective, ui_callback=None):
         action_history = [] 
         final_report = "Task failed or timed out."
         
-        # --- State Trackers ---
+        # State trackers
         needs_deep_read = False 
         needs_vision = False
-        # ----------------------
         
-        while step_count < 10:
+        while step_count < 20:
             dom_data = await get_dom_snapshot(page, deep_read=needs_deep_read)
             needs_deep_read = False 
             
-            # --- THE NEW SYSTEM PROMPT ARCHITECTURE ---
             prompt = f"""
             # SYSTEM INSTRUCTIONS
             You are an elite autonomous web agent. Your job is to achieve the user's objective by navigating the web, extracting information, and taking actions. 
@@ -104,8 +102,10 @@ async def run_agent(user_objective, ui_callback=None):
             1. Navigation: Use "goto" to open a URL. Use "scroll" to move up or down.
             2. Interaction: Use "click" and "type" using the provided element IDs from the JSON. Use "press" for keyboard keys.
             3. Reading: The JSON provides basic text. If text is hidden in paragraphs, use "read".
-            4. VISION (CRITICAL): If you need to solve a visual problem (like a math formula, an image, or a complex NPTEL diagram) that is NOT readable in the JSON, use the "look" tool to take a screenshot. ONLY use "look" if you are completely stuck and cannot answer the user's question with the JSON data alone.
-            5. Completion: When the goal is met, use "finish" and provide the final answer in the reason field.
+            4. VISION (CRITICAL): If you need to solve a visual problem (like a math formula, an image, or a complex diagram) that is NOT readable in the JSON, use the "look" tool to take a screenshot.
+            5. ANTI-LOOP RULE: Do not use the "scroll" action, or "click" the exact same ID, more than twice in a row. 
+            6. THE POPUP PROTOCOL: If you click a button and the page does not change, a popup or modal is likely blocking your screen. You MUST either use the "press" tool with the "Escape" key to kill the popup, or use the "look" tool to see what is blocking you.
+            7. SUCCESS RECOGNITION: E-commerce sites often redirect you or show "Subtotal (1 item)" after adding an item. If you see evidence that your goal was achieved, DO NOT second-guess yourself or restart. Immediately use the "finish" action.
             
             # CONTEXT
             Past Actions Taken (DO NOT REPEAT THESE):
@@ -120,21 +120,18 @@ async def run_agent(user_objective, ui_callback=None):
             What is your next logical step? Output strictly matching the Pydantic schema.
             """
             
-            # --- THE ON-DEMAND VISION INJECTION ---
             contents_payload = [prompt]
             screenshot_bytes = None
             
             if needs_vision:
                 print("📸 Snapping photo for AI...")
                 screenshot_bytes = await page.screenshot()
-                # Append the image to the payload
                 contents_payload[0] = prompt + "\n\nVISION MODULE ACTIVE: A screenshot of the current page is attached. Analyze the image to find the unextractable data."
                 contents_payload.append(types.Part.from_bytes(data=screenshot_bytes, mime_type='image/png'))
-                needs_vision = False # Turn the camera back off
-            # --------------------------------------
+                needs_vision = False 
             
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.1-flash-lite-preview',
                 contents=contents_payload,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -155,7 +152,6 @@ async def run_agent(user_objective, ui_callback=None):
                 thought = ai_decision.get("thought", "Thinking...")
                 
                 if ui_callback:
-                    # Only send image to UI if we actually took one this turn!
                     if screenshot_bytes:
                         ui_callback(f"🧠 **Thought:** {thought}", image_bytes=screenshot_bytes)
                     else:
@@ -165,7 +161,6 @@ async def run_agent(user_objective, ui_callback=None):
                 
             except Exception as e:
                 print(f"❌ JSON Parse Error: {e}")
-                print(f"Raw Output that caused the crash:\n{response.text}")
                 step_count += 1
                 await asyncio.sleep(5)
                 continue
@@ -176,46 +171,56 @@ async def run_agent(user_objective, ui_callback=None):
                 
             elif action_type == "read":
                 needs_deep_read = True
-                action_history.append("Triggered a deep read.")
+                action_history.append(f"Triggered a deep read (Step {step_count})")
                 step_count += 1
                 await asyncio.sleep(2) 
                 continue
                 
-            # --- THE NEW LOOK ACTION ---
             elif action_type == "look":
                 needs_vision = True
-                action_history.append("Triggered the camera to look at the screen.")
+                action_history.append(f"Triggered the camera to look at the screen (Step {step_count})")
                 step_count += 1
                 await asyncio.sleep(2)
                 continue
-            # ---------------------------
                 
             elif action_type == "goto":
                 target_url = ai_decision["command"]["url"]
                 if not target_url.startswith("http"):
                     target_url = "https://" + target_url
                 await page.goto(target_url)
-                action_history.append(f"Navigated to {target_url}")
+                action_history.append(f"Navigated to {target_url} (Step {step_count})")
                 step_count += 1
                 await asyncio.sleep(8)
                 continue
                 
+            # --- THE LOOP-PROOF SCROLL FIX ---
             elif action_type == "scroll":
                 direction = ai_decision["command"]["direction"]
+                
+                # Move mouse to the center to avoid hovering over unscrollable elements
+                viewport = page.viewport_size
+                if viewport:
+                    await page.mouse.move(viewport['width'] / 2, viewport['height'] / 2)
+                
+                # Use both physical wheel and JS to guarantee scrolling
                 if direction == "down":
                     await page.mouse.wheel(0, 800)
-                    action_history.append("Scrolled down")
+                    await page.evaluate("window.scrollBy(0, 800)")
+                    action_history.append(f"Scrolled down (Step {step_count})")
                 else:
                     await page.mouse.wheel(0, -800)
-                    action_history.append("Scrolled up")
+                    await page.evaluate("window.scrollBy(0, -800)")
+                    action_history.append(f"Scrolled up (Step {step_count})")
+                    
                 step_count += 1
                 await asyncio.sleep(2)
                 continue
+            # ---------------------------------
                 
             elif action_type == "press":
                 key = ai_decision["command"]["key"]
                 await page.keyboard.press(key)
-                action_history.append(f"Pressed '{key}'")
+                action_history.append(f"Pressed '{key}' (Step {step_count})")
                 step_count += 1
                 await asyncio.sleep(2)
                 continue
@@ -231,7 +236,7 @@ async def run_agent(user_objective, ui_callback=None):
                 
                 await page.keyboard.type(text_to_type, delay=10) 
                 await page.keyboard.press("Enter") 
-                action_history.append(f"Typed '{text_to_type}' into ID {element_id}")
+                action_history.append(f"Typed '{text_to_type}' into ID {element_id} (Step {step_count})")
                 step_count += 1
                 await asyncio.sleep(20) 
                 continue
@@ -243,7 +248,7 @@ async def run_agent(user_objective, ui_callback=None):
                     await target_locator.click(timeout=3000)
                 except Exception:
                     await target_locator.evaluate("node => node.click()")
-                action_history.append(f"Clicked ID {element_id}")
+                action_history.append(f"Clicked ID {element_id} (Step {step_count})")
             
             step_count += 1
             await asyncio.sleep(5) 

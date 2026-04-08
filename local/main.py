@@ -837,6 +837,33 @@ async def _adopt_newest_page_if_needed(context, current_page, previous_page_coun
     return current_page
 
 
+async def _adopt_new_tab_after_action(context, current_page, previous_page_count, wait_seconds=2.5):
+    adopted_page = current_page
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+
+    while asyncio.get_running_loop().time() < deadline:
+        open_pages = [candidate for candidate in context.pages if not candidate.is_closed()]
+        if open_pages:
+            newest_page = open_pages[-1]
+            if (
+                current_page is None
+                or current_page.is_closed()
+                or len(open_pages) > previous_page_count
+                or newest_page is not current_page
+            ):
+                adopted_page = newest_page
+                break
+        await asyncio.sleep(0.1)
+
+    adopted_page = await _adopt_newest_page_if_needed(context, adopted_page, previous_page_count)
+    if adopted_page and not adopted_page.is_closed():
+        try:
+            await adopted_page.bring_to_front()
+        except Exception:
+            pass
+    return adopted_page
+
+
 def _coerce_non_key_press_action(ai_decision, dom_data):
     action_type = ai_decision["command"]["action"]
     if action_type != "press":
@@ -1239,7 +1266,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 await page.keyboard.press("Backspace")
                 await page.keyboard.type(text_to_type, delay=10)
                 await page.keyboard.press("Enter")
-                page = await _adopt_newest_page_if_needed(context, page, previous_page_count)
+                page = await _adopt_new_tab_after_action(context, page, previous_page_count)
                 await _settle_page(page, wait_for_network=True, extra_delay=TYPE_SETTLE_SECONDS)
                 action_history.append(
                     f"Typed '{text_to_type}' into {_format_element_label(element)} on {page.url} (Step {step_count})"
@@ -1258,7 +1285,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 except Exception:
                     await target_locator.evaluate("node => node.click()")
 
-                page = await _adopt_newest_page_if_needed(context, page, previous_page_count)
+                page = await _adopt_new_tab_after_action(context, page, previous_page_count)
                 await _settle_page(page, wait_for_network=False, extra_delay=SHORT_SETTLE_SECONDS)
                 action_history.append(
                     f"Clicked {_format_element_label(element)} from {previous_url} to {page.url} (Step {step_count})"

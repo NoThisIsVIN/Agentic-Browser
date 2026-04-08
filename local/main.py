@@ -26,6 +26,7 @@ ACTION_TIMEOUT_MS = 3000
 SHORT_SETTLE_SECONDS = 0.8
 NAVIGATION_SETTLE_SECONDS = 1.5
 TYPE_SETTLE_SECONDS = 1.8
+_RETAINED_BROWSER_SESSION = None
 KEY_ALIASES = {
     "esc": "Escape",
     "escape": "Escape",
@@ -111,6 +112,141 @@ def _normalize_keyboard_key(key):
         return normalized
 
     return None
+
+
+def _is_media_objective(user_objective):
+    objective = " ".join(str(user_objective or "").strip().lower().split())
+    media_terms = ["play", "watch", "listen", "video", "song", "music", "youtube", "yt"]
+    return any(term in objective for term in media_terms)
+
+
+async def _wait_for_media_completion(page, ui_callback=None):
+    if "youtube.com/watch" not in page.url and "youtu.be/" not in page.url:
+        return
+
+    try:
+        media_info = await page.evaluate(
+            """
+            () => {
+                const video = document.querySelector('video');
+                if (!video) {
+                    return { present: false };
+                }
+                return {
+                    present: true,
+                    paused: video.paused,
+                    ended: video.ended,
+                    currentTime: Number(video.currentTime || 0),
+                    duration: Number(video.duration || 0),
+                };
+            }
+            """
+        )
+    except Exception:
+        return
+
+    if not media_info or not media_info.get("present"):
+        return
+
+    try:
+        await page.evaluate(
+            """
+            () => {
+                const video = document.querySelector('video');
+                if (video && video.paused && !video.ended) {
+                    video.play().catch(() => {});
+                }
+            }
+            """
+        )
+    except Exception:
+        pass
+
+    duration = media_info.get("duration") or 0
+    timeout_seconds = min(max(duration + 30, 120), 7200) if duration > 0 else 1800
+    elapsed = 0
+    announced_wait = False
+
+    while elapsed < timeout_seconds:
+        try:
+            status = await page.evaluate(
+                """
+                () => {
+                    const video = document.querySelector('video');
+                    if (!video) {
+                        return { present: false };
+                    }
+                    return {
+                        present: true,
+                        paused: video.paused,
+                        ended: video.ended,
+                        currentTime: Number(video.currentTime || 0),
+                        duration: Number(video.duration || 0),
+                    };
+                }
+                """
+            )
+        except Exception:
+            break
+
+        if not status or not status.get("present"):
+            break
+
+        if status.get("ended"):
+            if ui_callback:
+                ui_callback("**Playback complete.**")
+            return
+
+        if ui_callback and not announced_wait:
+            duration_text = ""
+            if status.get("duration"):
+                duration_text = f" Duration: about {int(status['duration'] // 60)} min {int(status['duration'] % 60)} sec."
+            ui_callback(f"**Playback detected. Waiting for the video to finish before wrapping up.**{duration_text}")
+            announced_wait = True
+
+        try:
+            await page.evaluate(
+                """
+                () => {
+                    const video = document.querySelector('video');
+                    if (video && video.paused && !video.ended) {
+                        video.play().catch(() => {});
+                    }
+                }
+                """
+            )
+        except Exception:
+            pass
+
+        await asyncio.sleep(5)
+        elapsed += 5
+
+    if ui_callback:
+        ui_callback("**Playback wait timed out, so I am ending the run while leaving the current result intact.**")
+
+
+async def _release_retained_browser_session():
+    global _RETAINED_BROWSER_SESSION
+
+    session = _RETAINED_BROWSER_SESSION
+    if not session:
+        return
+
+    _RETAINED_BROWSER_SESSION = None
+    context = session.get("context")
+    playwright = session.get("playwright")
+
+    if context is not None:
+        try:
+            await context.close()
+        except Exception:
+            pass
+
+    if playwright is not None:
+        try:
+            await playwright.stop()
+        except Exception:
+            pass
 
 
 def _normalize_agent_output(payload):
@@ -843,10 +979,16 @@ def get_next_action(client, prompt, screenshot_bytes=None):
         raise ValueError(f"Could not normalize model output: {raw_text}") from exc
 
 
-async def run_agent(user_objective, ui_callback=None):
+async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
     client = Client(host=OLLAMA_HOST)
+    global _RETAINED_BROWSER_SESSION
 
-    async with async_playwright() as p:
+    await _release_retained_browser_session()
+
+    p = await async_playwright().start()
+    context = None
+    retain_browser_session = False
+    try:
         user_data_dir = str((PROJECT_ROOT / "agent_profile").resolve())
 
         print(f"Booting persistent browser with Ollama model: {OLLAMA_MODEL}")
@@ -1007,6 +1149,8 @@ async def run_agent(user_objective, ui_callback=None):
                 continue
 
             if action_type == "finish":
+                if _is_media_objective(user_objective):
+                    await _wait_for_media_completion(page, ui_callback=ui_callback)
                 final_report = ai_decision["command"]["reason"]
                 break
 
@@ -1125,9 +1269,23 @@ async def run_agent(user_objective, ui_callback=None):
 
         await _emit_final_screenshot(page, ui_callback)
         await asyncio.sleep(SHORT_SETTLE_SECONDS)
-        await context.close()
-
+        if keep_browser_open:
+            retain_browser_session = True
+            _RETAINED_BROWSER_SESSION = {"playwright": p, "context": context}
+            if ui_callback:
+                ui_callback("**Browser left open after completion.**")
         return final_report
+    finally:
+        if not retain_browser_session:
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            try:
+                await p.stop()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

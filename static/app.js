@@ -11,6 +11,7 @@
   const runState = document.getElementById("run-state") || { textContent: "", classList: { toggle() {} } };
   const statusText = document.getElementById("status-text");
   const activeBackendName = document.getElementById("active-backend-name") || { textContent: "" };
+  const keepBrowserOpenToggle = document.getElementById("keep-browser-open");
   const backendCards = Array.from(document.querySelectorAll(".backend-card"));
   const suggestionPills = Array.from(document.querySelectorAll(".suggestion-pill"));
   const pageShell = document.querySelector(".page-shell");
@@ -131,7 +132,11 @@
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ objective, backend: selectedBackend }),
+      body: JSON.stringify({
+        objective,
+        backend: selectedBackend,
+        keep_browser_open: Boolean(keepBrowserOpenToggle && keepBrowserOpenToggle.checked),
+      }),
     });
 
     if (!response.ok || !response.body) {

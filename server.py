@@ -38,6 +38,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 class AgentRequest(BaseModel):
     objective: str = Field(min_length=1, description="The task to run in the browser.")
     backend: Literal["local", "gemini"] = "gemini"
+    keep_browser_open: bool = False
 
 
 def _default_backend():
@@ -117,7 +118,13 @@ async def run_agent_stream(payload: AgentRequest):
         def run_agent_in_thread():
             if sys.platform == "win32":
                 asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-            return asyncio.run(runner(payload.objective, ui_callback=ui_callback))
+            return asyncio.run(
+                runner(
+                    payload.objective,
+                    ui_callback=ui_callback,
+                    keep_browser_open=payload.keep_browser_open,
+                )
+            )
 
         async def run_task():
             try:

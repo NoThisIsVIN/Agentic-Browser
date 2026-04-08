@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentic Browser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="ambient-layer ambient-grid"></div>
+  <div class="ambient-layer ambient-glow ambient-glow-a"></div>
+  <div class="ambient-layer ambient-glow ambient-glow-b"></div>
+  <div class="ambient-layer ambient-spotlight"></div>
+  <div class="ambient-layer ambient-track ambient-track-a"></div>
+  <div class="ambient-layer ambient-track ambient-track-b"></div>
+
+  <div class="page-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <p class="eyebrow">Project Showcase</p>
+        <h1>Agentic Browser</h1>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="landing-panel card">
+        <div class="panel-orbit panel-orbit-a"></div>
+        <div class="panel-orbit panel-orbit-b"></div>
+        <aside class="control-panel">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Mission Control</p>
+              <h2>Give the agent a task</h2>
+            </div>
+          </div>
+
+          <div class="backend-list">
+            {% for key, backend in backends.items() %}
+            <button
+              class="backend-card{% if key == default_backend %} active{% endif %}"
+              data-backend="{{ key }}"
+              data-available="{{ 'true' if backend.available else 'false' }}"
+              type="button"
+            >
+              <span class="backend-topline">
+                <strong>{{ backend.label }}</strong>
+                <span class="backend-accent">{{ backend.accent }}</span>
+              </span>
+              <span class="backend-model">{{ backend.model }}</span>
+              <span class="backend-status">{{ backend.status }}</span>
+            </button>
+            {% endfor %}
+          </div>
+
+          <form id="agent-form" class="command-form">
+            <label class="field-label" for="objective">Task prompt</label>
+            <textarea id="objective" name="objective" rows="6" placeholder="Open Flipkart, search for 64GB pendrive under Rs. 700, and tell me the first three results."></textarea>
+
+            <div class="suggestions">
+              <button type="button" class="suggestion-pill">Open Python.org and tell me the first headline on the homepage.</button>
+              <button type="button" class="suggestion-pill">Open YouTube, search for Gemini API browser agent, and tell me the first video title.</button>
+              <button type="button" class="suggestion-pill">Search Amazon India for a wireless mouse under Rs. 1000 and tell me the first three products.</button>
+            </div>
+
+            <button id="run-button" class="run-button" type="submit">Launch Agent</button>
+          </form>
+        </aside>
+      </section>
+
+      <section id="results-panel" class="results-panel">
+        <article class="card live-panel">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Live Feed</p>
+              <h2>Thoughts and actions</h2>
+            </div>
+            <div class="live-status">
+              <div id="status-text" class="status-text">Waiting for a mission.</div>
+              <div class="pulse-cluster" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+          </div>
+          <div id="updates" class="updates"></div>
+        </article>
+
+        <article id="report-panel" class="card report-panel">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Mission Outcome</p>
+              <h2>Final report</h2>
+            </div>
+          </div>
+          <div id="final-report" class="final-report">
+            The final answer from the agent will appear here.
+          </div>
+          <div class="preview-wrap">
+            <p class="preview-label">Visual inspection</p>
+            <img id="preview-image" class="preview-image hidden" alt="Agent screenshot preview">
+            <div id="preview-placeholder" class="preview-placeholder">
+              Screenshots from vision steps will appear here.
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    window.APP_CONFIG = {{ {"backends": backends, "default_backend": default_backend}|tojson }};
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

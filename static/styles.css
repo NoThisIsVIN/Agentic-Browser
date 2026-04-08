@@ -1,16 +1,16 @@
 :root {
-  --bg: #f7efe4;
-  --bg-2: #fffaf2;
-  --ink: #162033;
-  --muted: #6a7688;
-  --line: rgba(22, 32, 51, 0.12);
-  --card: rgba(255, 255, 255, 0.8);
-  --accent: #ef7f3b;
-  --accent-2: #f3a34b;
-  --accent-soft: rgba(239, 127, 59, 0.13);
-  --cyan: #177ca2;
-  --lime: #2ca27b;
-  --shadow: 0 26px 80px rgba(34, 53, 86, 0.12);
+  --bg: #0d1117;
+  --bg-2: #131a26;
+  --ink: #f2f5fb;
+  --muted: #9eabc0;
+  --line: rgba(186, 202, 227, 0.14);
+  --card: rgba(14, 21, 33, 0.7);
+  --accent: #ff7a18;
+  --accent-2: #f94d6a;
+  --accent-soft: rgba(255, 122, 24, 0.14);
+  --cyan: #4dd7ff;
+  --lime: #8fffa0;
+  --shadow: 0 30px 120px rgba(0, 0, 0, 0.45);
   --radius-lg: 28px;
 }
 
@@ -31,8 +31,8 @@ body {
   font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
   color: var(--ink);
   background:
-    radial-gradient(circle at top, rgba(23, 124, 162, 0.08), transparent 32%),
-    linear-gradient(180deg, #fffdf8 0%, var(--bg-2) 26%, var(--bg) 100%);
+    radial-gradient(circle at top, rgba(77, 215, 255, 0.08), transparent 32%),
+    linear-gradient(180deg, #0a0f15 0%, var(--bg) 38%, #0c1017 100%);
 }
 
 body::before {
@@ -40,8 +40,8 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(circle at var(--pointer-x) var(--pointer-y), rgba(239, 127, 59, 0.12), transparent 20%),
-    radial-gradient(circle at calc(var(--pointer-x) + 8%) calc(var(--pointer-y) + 12%), rgba(23, 124, 162, 0.06), transparent 24%);
+    radial-gradient(circle at var(--pointer-x) var(--pointer-y), rgba(255, 122, 24, 0.16), transparent 20%),
+    radial-gradient(circle at calc(var(--pointer-x) + 8%) calc(var(--pointer-y) + 12%), rgba(77, 215, 255, 0.08), transparent 24%);
   pointer-events: none;
   z-index: 0;
 }
@@ -55,11 +55,11 @@ body::before {
 
 .ambient-grid {
   background-image:
-    linear-gradient(rgba(22, 32, 51, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(22, 32, 51, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
   background-size: 72px 72px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent 95%);
-  opacity: 0.22;
+  opacity: 0.3;
 }
 
 .ambient-glow {
@@ -68,19 +68,19 @@ body::before {
 }
 
 .ambient-glow-a {
-  background: radial-gradient(circle at 18% 16%, rgba(239, 127, 59, 0.25), transparent 24%);
+  background: radial-gradient(circle at 18% 16%, rgba(255, 122, 24, 0.34), transparent 24%);
   animation: driftGlowA 16s ease-in-out infinite alternate;
 }
 
 .ambient-glow-b {
-  background: radial-gradient(circle at 82% 10%, rgba(23, 124, 162, 0.2), transparent 22%);
+  background: radial-gradient(circle at 82% 10%, rgba(77, 215, 255, 0.28), transparent 22%);
   animation: driftGlowB 18s ease-in-out infinite alternate;
 }
 
 .ambient-spotlight {
   background:
-    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.35), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 40%);
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%);
 }
 
 .ambient-track {
@@ -89,14 +89,14 @@ body::before {
 }
 
 .ambient-track-a {
-  background-image: linear-gradient(110deg, transparent 0%, rgba(239, 127, 59, 0.35) 45%, transparent 52%);
+  background-image: linear-gradient(110deg, transparent 0%, rgba(255, 122, 24, 0.55) 45%, transparent 52%);
   background-size: 36% 2px;
   background-position: -20% 18%;
   animation: trackSlideA 11s linear infinite;
 }
 
 .ambient-track-b {
-  background-image: linear-gradient(110deg, transparent 0%, rgba(23, 124, 162, 0.32) 45%, transparent 52%);
+  background-image: linear-gradient(110deg, transparent 0%, rgba(77, 215, 255, 0.5) 45%, transparent 52%);
   background-size: 44% 2px;
   background-position: 120% 74%;
   animation: trackSlideB 13s linear infinite;
@@ -159,7 +159,7 @@ body::before {
 .hero-ribbon span,
 .hero-stat {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.68);
+  background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(16px);
 }
 
@@ -181,7 +181,7 @@ body::before {
 
 .status-card,
 .card {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 250, 242, 0.82));
+  background: linear-gradient(180deg, rgba(25, 35, 52, 0.88), rgba(13, 19, 31, 0.78));
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
@@ -213,8 +213,8 @@ body::before {
 }
 
 .state-pill.idle {
-  background: rgba(22, 32, 51, 0.08);
-  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(242, 245, 251, 0.84);
 }
 
 .state-pill.running {
@@ -239,7 +239,7 @@ body::before {
   position: absolute;
   inset: 1px;
   border-radius: calc(var(--radius-lg) - 1px);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.48), transparent 24%, rgba(255, 255, 255, 0.22));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 24%, rgba(255, 255, 255, 0.02));
   pointer-events: none;
 }
 
@@ -252,7 +252,7 @@ body::before {
 .panel-orbit {
   position: absolute;
   border-radius: 999px;
-  border: 1px solid rgba(22, 32, 51, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   pointer-events: none;
 }
 
@@ -331,7 +331,7 @@ body::before {
   text-align: left;
   border: 1px solid var(--line);
   border-radius: 22px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 250, 242, 0.72));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
   padding: 18px;
   cursor: pointer;
   transition: transform 220ms ease, border-color 220ms ease, background 220ms ease, box-shadow 220ms ease;
@@ -345,7 +345,7 @@ body::before {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: linear-gradient(120deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+  background: linear-gradient(120deg, transparent 0%, rgba(255, 255, 255, 0.06) 50%, transparent 100%);
   transform: translateX(-130%);
   opacity: 0;
 }
@@ -354,8 +354,8 @@ body::before {
 .backend-card.active {
   transform: translateY(-4px);
   border-color: rgba(77, 215, 255, 0.34);
-  background: linear-gradient(180deg, rgba(23, 124, 162, 0.08), rgba(255, 255, 255, 0.74));
-  box-shadow: 0 18px 42px rgba(34, 53, 86, 0.14);
+  background: linear-gradient(180deg, rgba(77, 215, 255, 0.08), rgba(255, 255, 255, 0.03));
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.26);
 }
 
 .backend-card:hover::after,
@@ -390,7 +390,7 @@ body::before {
 
 .field-label {
   font-weight: 700;
-  color: var(--ink);
+  color: rgba(242, 245, 251, 0.92);
 }
 
 textarea {
@@ -399,8 +399,8 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 22px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 250, 242, 0.86)),
-    rgba(255, 255, 255, 0.75);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(5, 10, 16, 0.55);
   padding: 20px;
   resize: vertical;
   font: inherit;
@@ -424,10 +424,10 @@ textarea:focus {
 .suggestion-pill {
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.06);
   padding: 11px 15px;
   font: inherit;
-  color: var(--ink);
+  color: rgba(242, 245, 251, 0.88);
   cursor: pointer;
   text-align: left;
   transition: transform 180ms ease, background 180ms ease, border-color 180ms ease;
@@ -435,7 +435,7 @@ textarea:focus {
 
 .suggestion-pill:hover {
   transform: translateY(-2px);
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.1);
   border-color: rgba(77, 215, 255, 0.22);
 }
 
@@ -558,10 +558,10 @@ textarea:focus {
 
 .update-item {
   border-radius: 20px;
-  border: 1px solid rgba(22, 32, 51, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 250, 242, 0.84)),
-    rgba(255, 255, 255, 0.72);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+    rgba(8, 13, 22, 0.55);
   padding: 15px;
   animation: feedIn 360ms cubic-bezier(0.16, 0.84, 0.32, 1) both;
 }
@@ -586,19 +586,19 @@ textarea:focus {
 
 .update-body {
   line-height: 1.7;
-  color: var(--ink);
+  color: rgba(242, 245, 251, 0.94);
 }
 
 .update-body strong,
 .final-report strong {
-  color: var(--ink);
+  color: white;
 }
 
 .update-body code,
 .final-report code {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(22, 32, 51, 0.08);
+  background: rgba(255, 255, 255, 0.08);
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.92em;
 }
@@ -608,11 +608,11 @@ textarea:focus {
   padding: 20px;
   border-radius: 18px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 250, 242, 0.86)),
-    rgba(255, 255, 255, 0.75);
-  border: 1px solid rgba(22, 32, 51, 0.08);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)),
+    rgba(8, 13, 22, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   line-height: 1.75;
-  color: var(--ink);
+  color: rgba(242, 245, 251, 0.94);
 }
 
 .preview-wrap {
@@ -629,8 +629,8 @@ textarea:focus {
   display: block;
   max-height: 360px;
   object-fit: contain;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(22, 32, 51, 0.08);
+  background: rgba(5, 10, 16, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   animation: fadeInUp 480ms ease both;
 }
 
@@ -640,8 +640,8 @@ textarea:focus {
   min-height: 210px;
   padding: 24px;
   color: var(--muted);
-  border: 1px dashed rgba(22, 32, 51, 0.14);
-  background: rgba(255, 255, 255, 0.42);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .hidden {
@@ -657,7 +657,7 @@ body.running-mode .landing-panel {
 body.running-mode .live-panel {
   transform: scale(1.02);
   border-color: rgba(77, 215, 255, 0.18);
-  box-shadow: 0 28px 72px rgba(34, 53, 86, 0.16);
+  box-shadow: 0 36px 100px rgba(0, 0, 0, 0.5);
 }
 
 body.running-mode .live-panel::after {
@@ -686,7 +686,7 @@ body.result-mode .report-panel {
 }
 
 body.result-mode .final-report {
-  box-shadow: 0 18px 44px rgba(34, 53, 86, 0.14);
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.32);
   transform: translateY(-2px);
 }
 

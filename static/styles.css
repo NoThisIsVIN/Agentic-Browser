@@ -421,6 +421,25 @@ textarea:focus {
   gap: 10px;
 }
 
+.keep-open-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(242, 245, 251, 0.9);
+  cursor: pointer;
+}
+
+.keep-open-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
 .suggestion-pill {
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 999px;

@@ -15,15 +15,15 @@ _RETAINED_BROWSER_SESSION = None
 
 
 async def get_dom_snapshot(page, deep_read=False):
-    """Dynamically switches between fast navigation and deep reading."""
+    """Capture a richer interactive page snapshot for the model."""
     if deep_read:
-        selectors = "button, a, input, [role=\"button\"], textarea, h3, p, li, [contenteditable=\"true\"]"
+        selectors = "button, a, input, select, option, [role=\"button\"], [role=\"link\"], textarea, h1, h2, h3, p, li, label, [contenteditable=\"true\"]"
         max_chars = 1000
-        max_elements = 150
+        max_elements = 180
     else:
-        selectors = "button, a, input, [role=\"button\"], textarea, h3, [contenteditable=\"true\"]"
-        max_chars = 100
-        max_elements = 80
+        selectors = "button, a, input, select, [role=\"button\"], [role=\"link\"], textarea, h1, h2, h3, label, [contenteditable=\"true\"]"
+        max_chars = 160
+        max_elements = 110
 
     js_code = f"""
     () => {{
@@ -49,14 +49,38 @@ async def get_dom_snapshot(page, deep_read=False):
             let id = count + 1;
             el.setAttribute('data-agent-id', id);
 
-            let rawText = el.innerText || el.value || el.placeholder || 'No Text';
+            let rawText =
+                el.innerText ||
+                el.value ||
+                el.getAttribute('aria-label') ||
+                el.getAttribute('placeholder') ||
+                el.getAttribute('title') ||
+                'No Text';
             let cleanText = rawText.substring(0, {max_chars}).replace(/\\n/g, ' ');
+            let role = el.getAttribute('role') || '';
+            let ariaLabel = el.getAttribute('aria-label') || '';
+            let placeholder = el.getAttribute('placeholder') || '';
+            let href = el.getAttribute('href') || '';
+            let name = el.getAttribute('name') || '';
+            let title = el.getAttribute('title') || '';
+            let value = (el.value || '').toString().substring(0, 120);
+            let searchCandidate = /search|find|products|brands|youtube|amazon|flipkart|myntra|google/i.test(
+                [cleanText, ariaLabel, placeholder, name, title].join(' ')
+            );
 
             simplifiedDOM.push({{
                 id: id,
                 tag: el.tagName,
                 text: cleanText,
-                type: el.type || 'N/A'
+                type: el.type || 'N/A',
+                role: role || 'N/A',
+                aria_label: ariaLabel,
+                placeholder: placeholder,
+                name: name,
+                title: title,
+                href: href,
+                value: value,
+                search_candidate: searchCandidate
             }});
             count++;
         }}
@@ -100,6 +124,33 @@ async def _adopt_newest_page_if_needed(context, current_page, previous_page_coun
         return open_pages[-1]
 
     return current_page
+
+
+async def _adopt_new_tab_after_action(context, current_page, previous_page_count, wait_seconds=2.5):
+    adopted_page = current_page
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+
+    while asyncio.get_running_loop().time() < deadline:
+        open_pages = [candidate for candidate in context.pages if not candidate.is_closed()]
+        if open_pages:
+            newest_page = open_pages[-1]
+            if (
+                current_page is None
+                or current_page.is_closed()
+                or len(open_pages) > previous_page_count
+                or newest_page is not current_page
+            ):
+                adopted_page = newest_page
+                break
+        await asyncio.sleep(0.1)
+
+    adopted_page = await _adopt_newest_page_if_needed(context, adopted_page, previous_page_count)
+    if adopted_page and not adopted_page.is_closed():
+        try:
+            await adopted_page.bring_to_front()
+        except Exception:
+            pass
+    return adopted_page
 
 
 async def _settle_page(page, delay_seconds=2):
@@ -171,6 +222,23 @@ def _normalize_text(value):
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _fingerprint_dom(dom_data):
+    tokens = []
+    for element in dom_data[:25]:
+        tokens.append(
+            "|".join(
+                [
+                    str(element.get("tag", "")),
+                    str(element.get("role", "")),
+                    _normalize_text(element.get("text", ""))[:60],
+                    _normalize_text(element.get("aria_label", ""))[:40],
+                    _normalize_text(element.get("placeholder", ""))[:40],
+                ]
+            )
+        )
+    return " || ".join(tokens)
+
+
 def _get_element_details(dom_data, element_id):
     for element in dom_data:
         if element["id"] == element_id:
@@ -187,10 +255,15 @@ def _is_search_like_element(element):
             str(element.get("tag", "")),
             str(element.get("text", "")),
             str(element.get("type", "")),
+            str(element.get("role", "")),
+            str(element.get("aria_label", "")),
+            str(element.get("placeholder", "")),
+            str(element.get("name", "")),
+            str(element.get("title", "")),
         ]
     ).lower()
     search_markers = ["search", "find", "products", "brands", "amazon", "flipkart", "myntra", "youtube", "google"]
-    return any(marker in haystack for marker in search_markers)
+    return bool(element.get("search_candidate")) or any(marker in haystack for marker in search_markers)
 
 
 def _is_media_objective(user_objective):
@@ -339,6 +412,12 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
         last_typed_text = None
         last_typed_field = None
         last_typed_url = None
+        agent_memory = "No important memory yet."
+        last_next_goal = "Open the right website and identify the first useful interactive step."
+        last_action_result = "No previous action yet."
+        last_observation_key = None
+        repeated_observation_count = 0
+        stall_recovery_attempts = 0
 
         while step_count < 20:
             page = await _ensure_active_page(context, page)
@@ -346,6 +425,17 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             needs_deep_read = False
 
             current_url = page.url
+            try:
+                page_title = await page.title()
+            except Exception:
+                page_title = "Unknown"
+            observation_key = f"{current_url}::{_fingerprint_dom(dom_data)}"
+            if observation_key == last_observation_key:
+                repeated_observation_count += 1
+            else:
+                repeated_observation_count = 0
+                stall_recovery_attempts = 0
+            last_observation_key = observation_key
 
             prompt = f"""
             # SYSTEM INSTRUCTIONS
@@ -355,6 +445,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             Before acting, mentally break the goal into ordered sub-steps.
             After each action, check whether the page confirms success before continuing.
             If the page looks the same after an action, assume it failed and try a different approach.
+            Keep a short running memory and update it honestly every step.
 
             # YOUR TOOLKIT RULES
             1. Navigation: Use "goto" to open a URL. Use "scroll" to move up or down.
@@ -366,12 +457,19 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             7. SUCCESS RECOGNITION: E-commerce sites often redirect you or show "Subtotal (1 item)" after adding an item. If you see evidence that your goal was achieved, DO NOT second-guess yourself or restart. Immediately use the "finish" action.
             8. TYPING: After using "type", do NOT assume Enter was pressed. If you need to submit a form or trigger a search, issue a separate "press" action with key "Enter".
             9. SEARCH RE-ENTRY RULE: If the same search text was already typed into a search field, do NOT type it again immediately. First confirm the current page state using the DOM or screenshot, then continue with the next step.
+            10. STALL RECOVERY RULE: If the page observation repeat count is above 0, do NOT repeat the same weak action. Prefer pressing Enter after a search, clicking a visible submit/search button, using Escape for popups, or using read/look to regain context.
+            11. RESPONSE FORMAT: Fill current_state.evaluation_previous_goal, current_state.memory, and current_state.next_goal carefully. The next_goal should be one immediate step, not the whole plan.
 
             # CONTEXT
             Current URL: {current_url}
+            Current Page Title: {page_title}
+            Last Goal: {last_next_goal}
+            Last Action Result: {last_action_result}
+            Observation Repeat Count: {repeated_observation_count}
             Last Entered Text: {last_typed_text or "None"}
             Last Entered Field: {last_typed_field or "None"}
             Last Entered URL: {last_typed_url or "None"}
+            Running Memory: {agent_memory}
 
             Past Actions Taken (DO NOT REPEAT THESE):
             {json.dumps(action_history, indent=2)}
@@ -417,14 +515,20 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                     raw_text = raw_text[3:-3].strip()
 
                 ai_decision = json.loads(raw_text)
+                current_state = ai_decision.get("current_state", {}) or {}
                 action_type = ai_decision["command"]["action"]
-                thought = ai_decision.get("thought", "Thinking...")
+                thought = ai_decision.get("thought") or current_state.get("next_goal") or "Thinking..."
+                evaluation_previous_goal = current_state.get("evaluation_previous_goal", "")
+                agent_memory = current_state.get("memory") or agent_memory
+                last_next_goal = current_state.get("next_goal") or last_next_goal
 
                 if ui_callback:
                     if screenshot_bytes:
                         ui_callback(f"**Thought:** {thought}", image_bytes=screenshot_bytes)
                     else:
                         ui_callback(f"**Thought:** {thought}")
+                    if evaluation_previous_goal:
+                        ui_callback(f"**Assessment:** {evaluation_previous_goal}")
                     ui_callback(f"**Action:** `{action_type}`")
 
             except Exception as exc:
@@ -465,6 +569,23 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 signature = ("press", ai_decision["command"]["key"])
 
             if signature and len(action_signatures) >= 2 and action_signatures[-2:] == [signature, signature]:
+                if repeated_observation_count >= 1 and stall_recovery_attempts < 2:
+                    stall_recovery_attempts += 1
+                    recovery_mode = "vision" if not needs_vision else "deep read"
+                    if ui_callback:
+                        ui_callback(
+                            f"**Recovery:** Repeated action on an unchanged page detected. Switching to {recovery_mode} before retrying."
+                        )
+                    action_history.append(
+                        f"Detected a stall after repeating {action_type}; switched to fresh inspection ({recovery_mode}) instead of blindly retrying (Step {step_count})"
+                    )
+                    if needs_vision:
+                        needs_deep_read = True
+                    else:
+                        needs_vision = True
+                    step_count += 1
+                    await asyncio.sleep(1)
+                    continue
                 final_report = _repeat_guard_message(action_type)
                 break
 
@@ -474,11 +595,13 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             if action_type == "finish":
                 if _is_media_objective(user_objective):
                     await _wait_for_media_completion(page, ui_callback=ui_callback)
+                last_action_result = "The goal appears complete on the current page."
                 final_report = ai_decision["command"]["reason"]
                 break
 
             if action_type == "read":
                 needs_deep_read = True
+                last_action_result = "Requested a deeper text scan of the current page."
                 action_history.append(f"Triggered a deep read (Step {step_count})")
                 step_count += 1
                 await asyncio.sleep(2)
@@ -486,6 +609,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
 
             if action_type == "look":
                 needs_vision = True
+                last_action_result = "Requested a screenshot-based visual inspection of the current page."
                 action_history.append(f"Triggered the camera to look at the screen (Step {step_count})")
                 step_count += 1
                 await asyncio.sleep(2)
@@ -507,6 +631,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                         )
                         break
                     raise
+                last_action_result = f"Navigated to {target_url}. Current page is now {page.url}."
                 action_history.append(f"Navigated to {target_url} (Step {step_count})")
                 needs_vision = True
                 step_count += 1
@@ -521,10 +646,12 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 if direction == "down":
                     await page.mouse.wheel(0, 800)
                     await page.evaluate("window.scrollBy(0, 800)")
+                    last_action_result = "Scrolled down to reveal more content."
                     action_history.append(f"Scrolled down (Step {step_count})")
                 else:
                     await page.mouse.wheel(0, -800)
                     await page.evaluate("window.scrollBy(0, -800)")
+                    last_action_result = "Scrolled up to revisit higher page content."
                     action_history.append(f"Scrolled up (Step {step_count})")
 
                 step_count += 1
@@ -534,6 +661,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             if action_type == "press":
                 key = ai_decision["command"]["key"]
                 await page.keyboard.press(key)
+                last_action_result = f"Pressed the {key} key."
                 if _normalize_text(key) == "enter":
                     last_typed_text = None
                     last_typed_field = None
@@ -552,6 +680,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 previous_page_count = len([candidate for candidate in context.pages if not candidate.is_closed()])
                 clicked = await _click_locator_safely(target_locator)
                 if not clicked:
+                    last_action_result = f"Could not focus {element_label}; the element disappeared or the page changed."
                     action_history.append(
                         f"Could not focus '{element_label}' (ID {element_id}) because the page changed or the element disappeared (Step {step_count})"
                     )
@@ -563,11 +692,12 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 await page.keyboard.press("Control+A")
                 await page.keyboard.press("Backspace")
                 await page.keyboard.type(text_to_type, delay=10)
-                page = await _adopt_newest_page_if_needed(context, page, previous_page_count)
+                page = await _adopt_new_tab_after_action(context, page, previous_page_count)
                 await _settle_page(page, delay_seconds=2)
                 last_typed_text = text_to_type
                 last_typed_field = element_label
                 last_typed_url = current_url
+                last_action_result = f"Typed '{text_to_type}' into '{element_label}'."
                 action_history.append(
                     f"Typed '{text_to_type}' into '{element_label}' (ID {element_id}, Step {step_count})"
                 )
@@ -582,6 +712,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 previous_page_count = len([candidate for candidate in context.pages if not candidate.is_closed()])
                 clicked = await _click_locator_safely(target_locator)
                 if not clicked:
+                    last_action_result = f"Could not click {element_label}; the target disappeared or the page changed."
                     action_history.append(
                         f"Could not click '{element_label}' (ID {element_id}) because the page changed or the element disappeared (Step {step_count})"
                     )
@@ -589,12 +720,13 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                     step_count += 1
                     await asyncio.sleep(1)
                     continue
-                page = await _adopt_newest_page_if_needed(context, page, previous_page_count)
+                page = await _adopt_new_tab_after_action(context, page, previous_page_count)
                 await _settle_page(page, delay_seconds=2)
                 if _is_search_like_element(_get_element_details(dom_data, element_id)):
                     last_typed_text = None
                     last_typed_field = None
                     last_typed_url = None
+                last_action_result = f"Clicked '{element_label}'. Current page is {page.url}."
                 action_history.append(f"Clicked '{element_label}' (ID {element_id}, Step {step_count})")
 
             step_count += 1

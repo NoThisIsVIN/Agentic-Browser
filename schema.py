@@ -1,6 +1,23 @@
 from pydantic import BaseModel, Field
 from typing import Literal
 
+
+class AgentBrain(BaseModel):
+    evaluation_previous_goal: str = Field(
+        description=(
+            "Evaluate whether the previous next_goal was achieved. Start with Success, Failed, or Unknown, "
+            "then briefly explain why."
+        )
+    )
+    memory: str = Field(
+        description=(
+            "Short running memory of useful facts and progress that should be remembered across steps."
+        )
+    )
+    next_goal: str = Field(
+        description="The next immediate goal that should be achieved with the upcoming action."
+    )
+
 class ClickAction(BaseModel):
     action: Literal["click"] = "click"
     element_id: int = Field(description="The numeric ID of the element to click.")
@@ -40,5 +57,6 @@ class LookAction(BaseModel):
 # --- THE FINAL OUTPUT ---
 class AgentOutput(BaseModel):
     thought: str = Field(description="The agent's internal reasoning.")
+    current_state: AgentBrain = Field(description="Evaluation, memory, and next-goal state for the current step.")
     command: ClickAction | TypeAction | FinishAction | GotoAction | ReadAction | ScrollAction | PressAction | LookAction
 # ------------------------

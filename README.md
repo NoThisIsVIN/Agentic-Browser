@@ -1,4 +1,4 @@
-# 🌐 Agentic Browser / Web Agent OS
+# 🌐 Agentic Browser
 
 An autonomous, AI-driven browser automation agent. By combining Playwright with the Google Gemini API, this agent can autonomously navigate the web, understand page structures, click elements, fill forms, and solve complex objectives—all while streaming its thought process and what it sees back to you.
 

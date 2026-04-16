@@ -613,6 +613,19 @@ textarea:focus {
   color: white;
 }
 
+.update-body a,
+.final-report a {
+  color: #7ddcff;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(125, 220, 255, 0.4);
+}
+
+.update-body a:hover,
+.final-report a:hover {
+  color: #b6ecff;
+  border-bottom-color: rgba(182, 236, 255, 0.9);
+}
+
 .update-body code,
 .final-report code {
   padding: 2px 8px;
@@ -632,6 +645,19 @@ textarea:focus {
   border: 1px solid rgba(255, 255, 255, 0.06);
   line-height: 1.75;
   color: rgba(242, 245, 251, 0.94);
+}
+
+.rich-line + .rich-line {
+  margin-top: 10px;
+}
+
+.rich-line-list {
+  padding-left: 8px;
+  border-left: 2px solid rgba(125, 220, 255, 0.18);
+}
+
+.rich-gap {
+  height: 10px;
 }
 
 .preview-wrap {

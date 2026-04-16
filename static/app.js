@@ -10,14 +10,10 @@
   const runButton = document.getElementById("run-button");
   const runState = document.getElementById("run-state") || { textContent: "", classList: { toggle() {} } };
   const statusText = document.getElementById("status-text");
-  const activeBackendName = document.getElementById("active-backend-name") || { textContent: "" };
   const keepBrowserOpenToggle = document.getElementById("keep-browser-open");
-  const backendCards = Array.from(document.querySelectorAll(".backend-card"));
   const suggestionPills = Array.from(document.querySelectorAll(".suggestion-pill"));
   const pageShell = document.querySelector(".page-shell");
 
-  const config = window.APP_CONFIG || { backends: {}, default_backend: "gemini" };
-  let selectedBackend = config.default_backend || "gemini";
   let running = false;
 
   function escapeHtml(value) {
@@ -29,12 +25,30 @@
       .replaceAll("'", "&#39;");
   }
 
-  function renderRichText(value) {
+  function renderInlineRichText(value) {
     let safe = escapeHtml(value);
+    safe = safe.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>'
+    );
     safe = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     safe = safe.replace(/`([^`]+)`/g, "<code>$1</code>");
-    safe = safe.replace(/\n/g, "<br>");
     return safe;
+  }
+
+  function renderRichText(value) {
+    const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+    return lines
+      .map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return '<div class="rich-gap"></div>';
+        }
+
+        const cssClass = /^(\d+\.|[-*])\s/.test(trimmed) ? "rich-line rich-line-list" : "rich-line";
+        return `<div class="${cssClass}">${renderInlineRichText(trimmed)}</div>`;
+      })
+      .join("");
   }
 
   function animateScrollTo(element, offset = 0, duration = 950) {
@@ -64,26 +78,10 @@
     requestAnimationFrame(step);
   }
 
-  function setBackend(name) {
-    const backend = config.backends[name];
-    if (!backend) {
-      return;
-    }
-    selectedBackend = name;
-    activeBackendName.textContent = `${backend.label} • ${backend.model}`;
-    backendCards.forEach((card) => {
-      card.classList.toggle("active", card.dataset.backend === name);
-    });
-    activeBackendName.textContent = `${backend.label} - ${backend.model}`;
-  }
-
   function setRunningState(isRunning) {
     running = isRunning;
     runButton.disabled = isRunning;
     objectiveInput.disabled = isRunning;
-    backendCards.forEach((card) => {
-      card.disabled = isRunning;
-    });
     suggestionPills.forEach((pill) => {
       pill.disabled = isRunning;
     });
@@ -134,7 +132,6 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         objective,
-        backend: selectedBackend,
         keep_browser_open: Boolean(keepBrowserOpenToggle && keepBrowserOpenToggle.checked),
       }),
     });
@@ -185,15 +182,6 @@
     }
   }
 
-  backendCards.forEach((card) => {
-    card.addEventListener("click", () => {
-      if (card.dataset.available === "false" || running) {
-        return;
-      }
-      setBackend(card.dataset.backend);
-    });
-  });
-
   suggestionPills.forEach((pill) => {
     pill.addEventListener("click", () => {
       objectiveInput.value = pill.textContent.trim();
@@ -243,6 +231,4 @@
       setRunningState(false);
     }
   });
-
-  setBackend(selectedBackend);
 })();

@@ -1,6 +1,9 @@
 import asyncio
 import json
 import os
+import re
+import threading
+import time
 
 from dotenv import load_dotenv
 from google import genai
@@ -12,6 +15,8 @@ from schema import AgentOutput
 load_dotenv()
 
 _RETAINED_BROWSER_SESSION = None
+_GEMINI_RATE_LIMIT_LOCK = threading.Lock()
+_NEXT_GEMINI_REQUEST_AT = 0.0
 
 
 async def get_dom_snapshot(page, deep_read=False):
@@ -60,7 +65,15 @@ async def get_dom_snapshot(page, deep_read=False):
             let role = el.getAttribute('role') || '';
             let ariaLabel = el.getAttribute('aria-label') || '';
             let placeholder = el.getAttribute('placeholder') || '';
-            let href = el.getAttribute('href') || '';
+            let rawHref = el.getAttribute('href') || '';
+            let href = '';
+            if (rawHref) {{
+                try {{
+                    href = new URL(rawHref, window.location.href).toString();
+                }} catch (error) {{
+                    href = rawHref;
+                }}
+            }}
             let name = el.getAttribute('name') || '';
             let title = el.getAttribute('title') || '';
             let value = (el.value || '').toString().substring(0, 120);
@@ -202,6 +215,48 @@ async def _release_retained_browser_session():
             pass
 
 
+def _get_gemini_request_interval_seconds():
+    rpm_text = os.getenv("GEMINI_RPM_LIMIT", "").strip()
+    if rpm_text:
+        try:
+            rpm_value = float(rpm_text)
+            if rpm_value > 0:
+                return 60.0 / rpm_value
+        except ValueError:
+            pass
+
+    interval_text = os.getenv("GEMINI_REQUEST_INTERVAL_SECONDS", "").strip()
+    if interval_text:
+        try:
+            interval_value = float(interval_text)
+            if interval_value > 0:
+                return interval_value
+        except ValueError:
+            pass
+
+    return 15.0
+
+
+async def _respect_gemini_rate_limit(ui_callback=None):
+    global _NEXT_GEMINI_REQUEST_AT
+
+    interval_seconds = _get_gemini_request_interval_seconds()
+    wait_seconds = 0.0
+
+    with _GEMINI_RATE_LIMIT_LOCK:
+        now = time.monotonic()
+        wait_seconds = max(0.0, _NEXT_GEMINI_REQUEST_AT - now)
+        scheduled_start = max(now, _NEXT_GEMINI_REQUEST_AT)
+        _NEXT_GEMINI_REQUEST_AT = scheduled_start + interval_seconds
+
+    if wait_seconds > 0:
+        if ui_callback:
+            ui_callback(
+                f"**Rate limit:** Waiting {wait_seconds:.1f}s before the next Gemini request to respect the configured RPM."
+            )
+        await asyncio.sleep(wait_seconds)
+
+
 def _repeat_guard_message(action_type):
     if action_type == "click":
         return (
@@ -220,6 +275,101 @@ def _repeat_guard_message(action_type):
 
 def _normalize_text(value):
     return " ".join(str(value or "").strip().lower().split())
+
+
+def _infer_direct_site_url(user_objective):
+    objective = _normalize_text(user_objective)
+    direct_sites = [
+        (["amazon india", "amazon.in"], "https://www.amazon.in"),
+        (["amazon"], "https://www.amazon.in"),
+        (["flipkart"], "https://www.flipkart.com"),
+        (["myntra"], "https://www.myntra.com"),
+        (["blinkit"], "https://blinkit.com"),
+        (["zepto", "zeptonow"], "https://www.zeptonow.com"),
+        (["youtube", "yt"], "https://www.youtube.com"),
+        (["wikipedia", "wiki"], "https://www.wikipedia.org"),
+        (["python.org", "python website", "python homepage"], "https://www.python.org"),
+        (["github"], "https://github.com"),
+        (["streamlit"], "https://streamlit.io"),
+    ]
+    for keywords, url in direct_sites:
+        if any(keyword in objective for keyword in keywords):
+            return url
+    return None
+
+
+def _is_google_search_url(url):
+    normalized = _normalize_text(url)
+    return "google.com/search" in normalized or "google.co.in/search" in normalized
+
+
+def _should_return_structured_results(user_objective):
+    objective = _normalize_text(user_objective)
+    result_keywords = [
+        "price",
+        "prices",
+        "cost",
+        "product",
+        "products",
+        "result",
+        "results",
+        "option",
+        "options",
+        "best",
+        "under rs",
+        "under inr",
+        "under rupees",
+        "tell me the first three",
+        "first three",
+        "shortlist",
+        "compare",
+    ]
+    return any(keyword in objective for keyword in result_keywords)
+
+
+def _normalize_report_lines(report_text):
+    lines = []
+    for raw_line in str(report_text or "").splitlines():
+        cleaned = re.sub(r"\s+", " ", raw_line).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return lines
+
+
+def _finalize_report(report_text, user_objective):
+    report_lines = _normalize_report_lines(report_text)
+    report = "\n".join(report_lines)
+    if not report:
+        return f"Completed the task: {user_objective}"
+
+    replacements = [
+        ("I have successfully ", ""),
+        ("I successfully ", ""),
+        ("I have ", ""),
+        ("I am ", ""),
+        ("The user asked me to ", ""),
+        ("The user's objective was to ", ""),
+    ]
+    for old, new in replacements:
+        if report.lower().startswith(old.lower()):
+            report = new + report[len(old):]
+
+    if _should_return_structured_results(user_objective):
+        structured_lines = _normalize_report_lines(report)
+        if structured_lines:
+            return "\n".join(structured_lines[:3])
+
+    flattened_report = " ".join(report.split())
+    if len(flattened_report) > 260:
+        sentences = [
+            segment.strip()
+            for segment in report.replace("!", ".").replace("?", ".").split(".")
+            if segment.strip()
+        ]
+        if sentences:
+            flattened_report = sentences[0]
+
+    return flattened_report[:260].rstrip(". ") + "."
 
 
 def _fingerprint_dom(dom_data):
@@ -459,6 +609,9 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             9. SEARCH RE-ENTRY RULE: If the same search text was already typed into a search field, do NOT type it again immediately. First confirm the current page state using the DOM or screenshot, then continue with the next step.
             10. STALL RECOVERY RULE: If the page observation repeat count is above 0, do NOT repeat the same weak action. Prefer pressing Enter after a search, clicking a visible submit/search button, using Escape for popups, or using read/look to regain context.
             11. RESPONSE FORMAT: Fill current_state.evaluation_previous_goal, current_state.memory, and current_state.next_goal carefully. The next_goal should be one immediate step, not the whole plan.
+            12. DIRECT NAVIGATION RULE: If the user clearly names a known website like Amazon, Blinkit, Flipkart, Myntra, Zepto, YouTube, Wikipedia, Python, or GitHub, go directly to that site instead of using Google as an intermediate step.
+            13. FINISH SUMMARY RULE: When you use finish, the reason must be a short user-facing summary in one or two concise sentences.
+            14. STRUCTURED RESULT RULE: For shopping, product, price-check, shortlist, and comparison tasks, finish.reason must be neatly formatted in Markdown with up to 3 visible items using this style when possible: `1. Product Name - Price: Rs. 499 - [Link](https://example.com)`. Only include products, prices, and links that are actually visible on the current page or screenshot.
 
             # CONTEXT
             Current URL: {current_url}
@@ -497,6 +650,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 contents_payload.append(types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png"))
                 needs_vision = False
 
+            await _respect_gemini_rate_limit(ui_callback=ui_callback)
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents_payload,
@@ -596,7 +750,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 if _is_media_objective(user_objective):
                     await _wait_for_media_completion(page, ui_callback=ui_callback)
                 last_action_result = "The goal appears complete on the current page."
-                final_report = ai_decision["command"]["reason"]
+                final_report = _finalize_report(ai_decision["command"]["reason"], user_objective)
                 break
 
             if action_type == "read":
@@ -619,6 +773,13 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 target_url = ai_decision["command"]["url"]
                 if not target_url.startswith("http"):
                     target_url = "https://" + target_url
+                direct_site_url = _infer_direct_site_url(user_objective)
+                if direct_site_url and _is_google_search_url(target_url):
+                    if ui_callback:
+                        ui_callback(
+                            f"**Direct routing:** The task names a known site, so I am opening `{direct_site_url}` directly instead of going through Google."
+                        )
+                    target_url = direct_site_url
                 try:
                     await page.goto(target_url)
                     await _settle_page(page, delay_seconds=4)
@@ -628,6 +789,14 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                         final_report = (
                             f"I could not open `{target_url}` because the domain could not be resolved. "
                             "Please check the URL or your internet/DNS connection and try again."
+                        )
+                        break
+                    if "ERR_HTTP_RESPONSE_CODE_FAILURE" in error_text:
+                        final_report = (
+                            f"I reached `{target_url}`, but the site blocked or rejected the browser navigation. "
+                            "This usually happens because the website returned a restricted page, anti-bot response, "
+                            "or location/login gate. Try running with a visible browser profile instead of headless mode "
+                            "and make sure the saved profile already has the required location or login state."
                         )
                         break
                     raise

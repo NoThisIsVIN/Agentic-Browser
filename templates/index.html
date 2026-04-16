@@ -38,21 +38,14 @@
           </div>
 
           <div class="backend-list">
-            {% for key, backend in backends.items() %}
-            <button
-              class="backend-card{% if key == default_backend %} active{% endif %}"
-              data-backend="{{ key }}"
-              data-available="{{ 'true' if backend.available else 'false' }}"
-              type="button"
-            >
+            <article class="backend-card active">
               <span class="backend-topline">
-                <strong>{{ backend.label }}</strong>
-                <span class="backend-accent">{{ backend.accent }}</span>
+                <strong>{{ model_info.label }}</strong>
+                <span class="backend-accent">{{ model_info.accent }}</span>
               </span>
-              <span class="backend-model">{{ backend.model }}</span>
-              <span class="backend-status">{{ backend.status }}</span>
-            </button>
-            {% endfor %}
+              <span class="backend-model">{{ model_info.model }}</span>
+              <span class="backend-status">{{ model_info.status }}</span>
+            </article>
           </div>
 
           <form id="agent-form" class="command-form">
@@ -115,10 +108,6 @@
       </section>
     </main>
   </div>
-
-  <script>
-    window.APP_CONFIG = {{ {"backends": backends, "default_backend": default_backend}|tojson }};
-  </script>
   <script src="/static/app.js"></script>
 </body>
 </html>

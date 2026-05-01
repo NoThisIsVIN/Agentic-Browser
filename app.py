@@ -41,7 +41,7 @@ if user_command := st.chat_input("E.g., Search Wikipedia for the release date of
             st.write("Booting Playwright and connecting to Gemini API...")
             
             # --- THE UPGRADED CALLBACK FUNCTION ---
-            def stream_to_ui(message, image_bytes=None):
+            def stream_to_ui(message, image_bytes=None, token_info=None):
                 st.markdown(message)
                 if image_bytes:
                     st.image(image_bytes, caption="What the AI sees", use_container_width=True)

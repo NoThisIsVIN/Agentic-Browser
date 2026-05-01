@@ -44,6 +44,10 @@
                 <span class="backend-accent">{{ model_info.accent }}</span>
               </span>
               <span class="backend-model">{{ model_info.model }}</span>
+              {% if model_info.project %}
+              <span class="backend-model">{{ model_info.project }} · {{ model_info.location }}</span>
+              {% endif %}
+              <span class="backend-model">RPM: {{ model_info.rpm }} · Output: {{ model_info.maxOutputTokens }} tokens</span>
               <span class="backend-status">{{ model_info.status }}</span>
             </article>
           </div>
@@ -77,6 +81,7 @@
             </div>
             <div class="live-status">
               <div id="status-text" class="status-text">Waiting for a mission.</div>
+              <button id="download-feed" class="feed-download" type="button" disabled>Download feed</button>
               <div class="pulse-cluster" aria-hidden="true">
                 <span></span>
                 <span></span>

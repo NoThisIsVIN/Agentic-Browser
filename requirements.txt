@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+playwright
+google-genai
+google-auth
+pydantic
+python-dotenv
+jinja2
+streamlit

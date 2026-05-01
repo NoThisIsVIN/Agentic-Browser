@@ -13,7 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from main import run_agent as gemini_run_agent
+from main import (
+    _get_gemini_max_output_tokens,
+    _get_gemini_request_interval_seconds,
+    _get_gemini_thinking_level,
+    _get_model_limits,
+    _normalize_google_application_credentials,
+    run_agent as gemini_run_agent,
+)
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -32,11 +39,22 @@ class AgentRequest(BaseModel):
 
 
 def _gemini_metadata():
-    gemini_configured = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    credentials_path = _normalize_google_application_credentials()
+    gemini_configured = bool(
+        os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+    )
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    limits = _get_model_limits(model_name)
+    request_interval = _get_gemini_request_interval_seconds(model_name)
     return {
         "label": "Gemini API",
-        "status": "Configured" if gemini_configured else "Missing API key",
-        "model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
+        "status": "Configured" if gemini_configured else "Missing credentials",
+        "model": model_name,
+        "rpm": round(60 / request_interval, 2) if request_interval > 0 else None,
+        "inputTokenLimit": limits.get("input_token_limit"),
+        "maxOutputTokens": _get_gemini_max_output_tokens(model_name),
+        "thinkingLevel": _get_gemini_thinking_level(model_name),
         "available": gemini_configured,
         "accent": "Cloud",
     }
@@ -66,13 +84,15 @@ async def run_agent_stream(payload: AgentRequest):
         queue: asyncio.Queue[dict] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
-        def ui_callback(message, image_bytes=None):
+        def ui_callback(message, image_bytes=None, token_info=None):
             event = {
                 "type": "update",
                 "message": message,
             }
             if image_bytes:
                 event["image"] = base64.b64encode(image_bytes).decode("ascii")
+            if token_info:
+                event["token_info"] = token_info
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
         def run_agent_in_thread():

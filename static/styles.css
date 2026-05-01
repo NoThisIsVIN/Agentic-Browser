@@ -533,6 +533,30 @@ textarea:focus {
   gap: 14px;
 }
 
+.feed-download {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(242, 245, 251, 0.9);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  padding: 10px 14px;
+  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease;
+}
+
+.feed-download:hover:not(:disabled) {
+  transform: translateY(-2px);
+  background: rgba(77, 215, 255, 0.1);
+  border-color: rgba(77, 215, 255, 0.28);
+}
+
+.feed-download:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .pulse-cluster {
   display: inline-flex;
   gap: 4px;

@@ -37,3 +37,8 @@ agent_profile/
 # Temporary files
 *.tmp
 *.temp
+
+# Google Cloud / Vertex AI Service Account Keys
+vertex-key.json
+*-key.json
+*.json

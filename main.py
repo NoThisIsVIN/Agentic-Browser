@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
@@ -14,9 +15,89 @@ from schema import AgentOutput
 
 load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent
 _RETAINED_BROWSER_SESSION = None
 _GEMINI_RATE_LIMIT_LOCK = threading.Lock()
 _NEXT_GEMINI_REQUEST_AT = 0.0
+_NO_EVALUATE_DEFAULT = object()
+
+_MODEL_LIMITS = {
+    "gemini-2.5-flash": {
+        "input_token_limit": 1_000_000,
+        "output_token_limit": 8192,
+        "default_rpm_limit": 15,
+        "default_thinking_level": "none",
+    },
+    "gemini-2.5-flash-lite": {
+        "input_token_limit": 1_000_000,
+        "output_token_limit": 8192,
+        "default_rpm_limit": 15,
+        "default_thinking_level": "none",
+    },
+    "gemini-3.1-pro-preview": {
+        "input_token_limit": 1_000_000,
+        "output_token_limit": 8192,
+        "default_rpm_limit": 6,
+        "default_thinking_level": "low",
+    },
+    "gemini-3.1-flash-lite-preview": {
+        "input_token_limit": 1_048_576,
+        "output_token_limit": 65_535,
+        "default_rpm_limit": 15,
+        "default_thinking_level": "none",
+    },
+}
+
+
+def _normalize_google_application_credentials():
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip().strip('"')
+    if not credentials_path:
+        return None
+
+    resolved_path = Path(credentials_path)
+    if not resolved_path.is_absolute():
+        resolved_path = BASE_DIR / resolved_path
+
+    if resolved_path.exists():
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(resolved_path)
+        return resolved_path
+
+    return None
+
+
+def _build_genai_client():
+    _normalize_google_application_credentials()
+    return genai.Client()
+
+
+def _is_transient_navigation_error(exc):
+    error_text = str(exc).lower()
+    transient_markers = [
+        "execution context was destroyed",
+        "most likely because of a navigation",
+        "cannot find context with specified id",
+        "target closed",
+        "frame was detached",
+    ]
+    return any(marker in error_text for marker in transient_markers)
+
+
+async def _evaluate_page_safely(page, script, default=_NO_EVALUATE_DEFAULT, attempts=3):
+    for attempt in range(attempts):
+        try:
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=1500)
+            except Exception:
+                pass
+            return await page.evaluate(script)
+        except Exception as exc:
+            if not _is_transient_navigation_error(exc) or attempt >= attempts - 1:
+                if default is not _NO_EVALUATE_DEFAULT:
+                    return default
+                raise
+            await asyncio.sleep(0.35 * (attempt + 1))
+
+    return default
 
 
 async def get_dom_snapshot(page, deep_read=False):
@@ -25,10 +106,12 @@ async def get_dom_snapshot(page, deep_read=False):
         selectors = "button, a, input, select, option, [role=\"button\"], [role=\"link\"], textarea, h1, h2, h3, p, li, label, [contenteditable=\"true\"]"
         max_chars = 1000
         max_elements = 180
+        include_layout = "false"
     else:
         selectors = "button, a, input, select, [role=\"button\"], [role=\"link\"], textarea, h1, h2, h3, label, [contenteditable=\"true\"]"
         max_chars = 160
-        max_elements = 110
+        max_elements = 150
+        include_layout = "false"
 
     js_code = f"""
     () => {{
@@ -47,7 +130,21 @@ async def get_dom_snapshot(page, deep_read=False):
 
             let rect = el.getBoundingClientRect();
             let style = window.getComputedStyle(el);
-            if (rect.width === 0 || rect.height === 0 || style.visibility === 'hidden' || style.display === 'none') {{
+            
+            // 1. Basic visibility & opacity checks
+            if (rect.width === 0 || rect.height === 0 || style.visibility === 'hidden' || style.display === 'none' || parseFloat(style.opacity) <= 0.05) {{
+                continue;
+            }}
+            
+            // 2. Strict Viewport Check: Ignore elements completely off-screen
+            let isOffScreen = (
+                rect.bottom < 0 || 
+                rect.top > window.innerHeight || 
+                rect.right < 0 || 
+                rect.left > window.innerWidth
+            );
+            
+            if (isOffScreen) {{
                 continue;
             }}
 
@@ -77,11 +174,17 @@ async def get_dom_snapshot(page, deep_read=False):
             let name = el.getAttribute('name') || '';
             let title = el.getAttribute('title') || '';
             let value = (el.value || '').toString().substring(0, 120);
+            let formId = '';
+            let formName = '';
+            if (el.form) {{
+                formId = el.form.getAttribute('id') || '';
+                formName = el.form.getAttribute('name') || '';
+            }}
             let searchCandidate = /search|find|products|brands|youtube|amazon|flipkart|myntra|google/i.test(
                 [cleanText, ariaLabel, placeholder, name, title].join(' ')
             );
 
-            simplifiedDOM.push({{
+            let item = {{
                 id: id,
                 tag: el.tagName,
                 text: cleanText,
@@ -93,14 +196,27 @@ async def get_dom_snapshot(page, deep_read=False):
                 title: title,
                 href: href,
                 value: value,
+                required: Boolean(el.required),
+                disabled: Boolean(el.disabled),
+                checked: Boolean(el.checked),
+                form_id: formId,
+                form_name: formName,
                 search_candidate: searchCandidate
-            }});
+            }};
+            if ({include_layout}) {{
+                item.x = Math.round(rect.x);
+                item.y = Math.round(rect.y);
+                item.width = Math.round(rect.width);
+                item.height = Math.round(rect.height);
+            }}
+            simplifiedDOM.push(item);
             count++;
         }}
         return simplifiedDOM;
     }}
     """
-    return await page.evaluate(js_code)
+    return await _evaluate_page_safely(page, js_code, default=[])
+
 
 
 async def _emit_final_screenshot(page, ui_callback):
@@ -215,7 +331,16 @@ async def _release_retained_browser_session():
             pass
 
 
-def _get_gemini_request_interval_seconds():
+def _get_model_limits(model_name):
+    normalized_model = _normalize_text(model_name)
+    return _MODEL_LIMITS.get(normalized_model, {})
+
+
+def _get_gemini_request_interval_seconds(model_name=None):
+    disable_local_limit = os.getenv("GEMINI_DISABLE_LOCAL_RATE_LIMIT", "").strip().lower()
+    if disable_local_limit in {"1", "true", "yes"}:
+        return 0.0
+
     rpm_text = os.getenv("GEMINI_RPM_LIMIT", "").strip()
     if rpm_text:
         try:
@@ -234,13 +359,66 @@ def _get_gemini_request_interval_seconds():
         except ValueError:
             pass
 
+    model_rpm_limit = _get_model_limits(model_name).get("default_rpm_limit")
+    if model_rpm_limit:
+        return 60.0 / model_rpm_limit
+
     return 15.0
 
 
-async def _respect_gemini_rate_limit(ui_callback=None):
+def _get_gemini_max_output_tokens(model_name):
+    limits = _get_model_limits(model_name)
+    output_limit = int(limits.get("output_token_limit") or 8192)
+    token_text = os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "").strip()
+    if not token_text:
+        return output_limit
+
+    try:
+        requested_tokens = int(token_text)
+    except ValueError:
+        return output_limit
+
+    return min(max(requested_tokens, 1), output_limit)
+
+
+def _get_gemini_thinking_level(model_name):
+    requested_level = os.getenv("GEMINI_THINKING_LEVEL", "").strip().lower()
+    if requested_level:
+        return None if requested_level == "none" else requested_level
+
+    val = _get_model_limits(model_name).get("default_thinking_level")
+    return None if val == "none" else val
+
+
+def _build_gemini_generation_config(model_name):
+    config_kwargs = {
+        "response_mime_type": "application/json",
+        "response_schema": AgentOutput,
+        "temperature": 0.0,
+        "max_output_tokens": _get_gemini_max_output_tokens(model_name),
+    }
+
+    thinking_level = _get_gemini_thinking_level(model_name)
+    if thinking_level:
+        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+
+    return types.GenerateContentConfig(**config_kwargs)
+
+
+def _get_agent_max_steps():
+    max_steps_text = os.getenv("AGENT_MAX_STEPS", "60").strip()
+    try:
+        max_steps = int(max_steps_text)
+    except ValueError:
+        return 60
+
+    return min(max(max_steps, 1), 100)
+
+
+async def _respect_gemini_rate_limit(model_name=None, ui_callback=None):
     global _NEXT_GEMINI_REQUEST_AT
 
-    interval_seconds = _get_gemini_request_interval_seconds()
+    interval_seconds = _get_gemini_request_interval_seconds(model_name)
     wait_seconds = 0.0
 
     with _GEMINI_RATE_LIMIT_LOCK:
@@ -250,11 +428,17 @@ async def _respect_gemini_rate_limit(ui_callback=None):
         _NEXT_GEMINI_REQUEST_AT = scheduled_start + interval_seconds
 
     if wait_seconds > 0:
-        if ui_callback:
-            ui_callback(
-                f"**Rate limit:** Waiting {wait_seconds:.1f}s before the next Gemini request to respect the configured RPM."
-            )
         await asyncio.sleep(wait_seconds)
+
+
+async def _generate_content_with_rate_limit_retry(client, model_name, contents_payload, ui_callback=None):
+    await _respect_gemini_rate_limit(model_name=model_name, ui_callback=ui_callback)
+    return await asyncio.to_thread(
+        client.models.generate_content,
+        model=model_name,
+        contents=contents_payload,
+        config=_build_gemini_generation_config(model_name),
+    )
 
 
 def _repeat_guard_message(action_type):
@@ -422,6 +606,7 @@ def _is_media_objective(user_objective):
     return any(term in objective for term in media_terms)
 
 
+
 async def _wait_for_media_completion(page, ui_callback=None):
     if "youtube.com/watch" not in page.url and "youtu.be/" not in page.url:
         return
@@ -528,8 +713,8 @@ async def _wait_for_media_completion(page, ui_callback=None):
 
 
 async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
-    client = genai.Client()
-    model_name = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+    client = _build_genai_client()
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     global _RETAINED_BROWSER_SESSION
 
     await _release_retained_browser_session()
@@ -553,6 +738,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
         await page.goto("about:blank")
 
         step_count = 0
+        max_steps = _get_agent_max_steps()
         action_history = []
         action_signatures = []
         final_report = "Task failed or timed out."
@@ -569,7 +755,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
         repeated_observation_count = 0
         stall_recovery_attempts = 0
 
-        while step_count < 20:
+        while step_count < max_steps:
             page = await _ensure_active_page(context, page)
             dom_data = await get_dom_snapshot(page, deep_read=needs_deep_read)
             needs_deep_read = False
@@ -612,6 +798,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             12. DIRECT NAVIGATION RULE: If the user clearly names a known website like Amazon, Blinkit, Flipkart, Myntra, Zepto, YouTube, Wikipedia, Python, or GitHub, go directly to that site instead of using Google as an intermediate step.
             13. FINISH SUMMARY RULE: When you use finish, the reason must be a short user-facing summary in one or two concise sentences.
             14. STRUCTURED RESULT RULE: For shopping, product, price-check, shortlist, and comparison tasks, finish.reason must be neatly formatted in Markdown with up to 3 visible items using this style when possible: `1. Product Name - Price: Rs. 499 - [Link](https://example.com)`. Only include products, prices, and links that are actually visible on the current page or screenshot.
+            15. SHOPPING EFFICIENCY RULE: On e-commerce search result pages (Amazon, Flipkart, etc.), prefer clicking the "Add to Cart" button directly from the search results list instead of opening individual product pages. Only navigate to a product page if no "Add to Cart" button is visible on the search results.
 
             # CONTEXT
             Current URL: {current_url}
@@ -625,7 +812,7 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             Running Memory: {agent_memory}
 
             Past Actions Taken (DO NOT REPEAT THESE):
-            {json.dumps(action_history, indent=2)}
+            {json.dumps(action_history[:1] + action_history[-4:] if len(action_history) > 5 else action_history, indent=2)}
 
             Current Screen Elements (JSON):
             {json.dumps(dom_data, indent=2)}
@@ -650,16 +837,25 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 contents_payload.append(types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png"))
                 needs_vision = False
 
-            await _respect_gemini_rate_limit(ui_callback=ui_callback)
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents_payload,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AgentOutput,
-                    temperature=0.0,
-                ),
+            response = await _generate_content_with_rate_limit_retry(
+                client=client,
+                model_name=model_name,
+                contents_payload=contents_payload,
+                ui_callback=ui_callback,
             )
+
+            # --- Extract token usage metadata ---
+            prompt_tokens = 0
+            response_tokens = 0
+            try:
+                usage = getattr(response, "usage_metadata", None)
+                if usage:
+                    prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+                    response_tokens = getattr(usage, "candidates_token_count", 0) or 0
+            except Exception:
+                pass
+
+            prompt_text_for_log = contents_payload[0] if contents_payload else ""
 
             try:
                 raw_text = response.text.strip()
@@ -677,6 +873,16 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 last_next_goal = current_state.get("next_goal") or last_next_goal
 
                 if ui_callback:
+                    ui_callback(
+                        f"**Step {step_count + 1} — Tokens:** prompt {prompt_tokens:,} · response {response_tokens:,}",
+                        token_info={
+                            "step": step_count + 1,
+                            "prompt_tokens": prompt_tokens,
+                            "response_tokens": response_tokens,
+                            "prompt_text": prompt_text_for_log,
+                            "response_text": raw_text,
+                        },
+                    )
                     if screenshot_bytes:
                         ui_callback(f"**Thought:** {thought}", image_bytes=screenshot_bytes)
                     else:
@@ -802,7 +1008,6 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                     raise
                 last_action_result = f"Navigated to {target_url}. Current page is now {page.url}."
                 action_history.append(f"Navigated to {target_url} (Step {step_count})")
-                needs_vision = True
                 step_count += 1
                 continue
 
@@ -814,17 +1019,16 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
 
                 if direction == "down":
                     await page.mouse.wheel(0, 800)
-                    await page.evaluate("window.scrollBy(0, 800)")
+                    await _evaluate_page_safely(page, "window.scrollBy(0, 800)", default=None)
                     last_action_result = "Scrolled down to reveal more content."
                     action_history.append(f"Scrolled down (Step {step_count})")
                 else:
                     await page.mouse.wheel(0, -800)
-                    await page.evaluate("window.scrollBy(0, -800)")
+                    await _evaluate_page_safely(page, "window.scrollBy(0, -800)", default=None)
                     last_action_result = "Scrolled up to revisit higher page content."
                     action_history.append(f"Scrolled up (Step {step_count})")
 
                 step_count += 1
-                await asyncio.sleep(2)
                 continue
 
             if action_type == "press":
@@ -837,7 +1041,6 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                     last_typed_url = None
                 action_history.append(f"Pressed '{key}' (Step {step_count})")
                 step_count += 1
-                await asyncio.sleep(2)
                 continue
 
             if action_type == "type":
@@ -861,15 +1064,30 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 await page.keyboard.press("Control+A")
                 await page.keyboard.press("Backspace")
                 await page.keyboard.type(text_to_type, delay=10)
+
+                # Auto-press Enter after typing into search-like fields
+                element_details = _get_element_details(dom_data, element_id)
+                auto_submitted = False
+                if _is_search_like_element(element_details):
+                    await asyncio.sleep(0.3)
+                    await page.keyboard.press("Enter")
+                    auto_submitted = True
+
                 page = await _adopt_new_tab_after_action(context, page, previous_page_count)
                 await _settle_page(page, delay_seconds=2)
                 last_typed_text = text_to_type
                 last_typed_field = element_label
                 last_typed_url = current_url
-                last_action_result = f"Typed '{text_to_type}' into '{element_label}'."
-                action_history.append(
-                    f"Typed '{text_to_type}' into '{element_label}' (ID {element_id}, Step {step_count})"
-                )
+                if auto_submitted:
+                    last_action_result = f"Typed '{text_to_type}' into '{element_label}' and pressed Enter to submit."
+                    action_history.append(
+                        f"Typed '{text_to_type}' into '{element_label}' (ID {element_id}) and auto-pressed Enter (Step {step_count})"
+                    )
+                else:
+                    last_action_result = f"Typed '{text_to_type}' into '{element_label}'."
+                    action_history.append(
+                        f"Typed '{text_to_type}' into '{element_label}' (ID {element_id}, Step {step_count})"
+                    )
                 step_count += 1
                 continue
 
@@ -899,7 +1117,12 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 action_history.append(f"Clicked '{element_label}' (ID {element_id}, Step {step_count})")
 
             step_count += 1
-            await asyncio.sleep(2)
+
+        if step_count >= max_steps and final_report == "Task failed or timed out.":
+            final_report = (
+                f"The agent reached the configured {max_steps}-step limit before it could confidently finish. "
+                "Try a more specific task, complete any login or verification manually, or increase AGENT_MAX_STEPS up to 100."
+            )
 
         await _emit_final_screenshot(page, ui_callback)
         await asyncio.sleep(2)

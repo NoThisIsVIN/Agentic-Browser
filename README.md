@@ -13,6 +13,8 @@ An autonomous, AI-driven browser automation agent. By combining Playwright with 
   - **Streamlit UI:** An alternative, easy-to-use Streamlit chat interface (`app.py`).
 - **Stealth Capabilities:** Uses Playwright with configurations to mask the bot signature.
 - **Structured Reporting:** Capable of returning formatted, structured final reports (e.g., lists of products and prices with links).
+- **Form-Aware DOM Mode:** Automatically expands the DOM snapshot on form-heavy pages so fields, labels, required flags, and layout details are easier for the agent to reason about.
+- **Downloadable Live Feed:** The web UI can export the live thoughts/actions feed as a Markdown file after a run.
 
 ---
 
@@ -42,9 +44,14 @@ Create or modify the `.env` file in the root directory to configure the AI model
 
 ```ini
 GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash # Or the model of your choice
-GEMINI_RPM_LIMIT=15 # Optional: Set to handle rate-limiting
+GEMINI_MODEL=gemini-3.1-flash-lite-preview # Or the model of your choice
+GEMINI_RPM_LIMIT=12 # Optional: Set to match your AI Studio project quota
+GEMINI_MAX_OUTPUT_TOKENS=65536 # Optional: Clamped to the configured model's output limit
+GEMINI_THINKING_LEVEL=minimal # Optional for Gemini 3 models: minimal, low, medium, or high
+AGENT_MAX_STEPS=60 # Optional: Max browser decisions per run, capped at 100
 ```
+
+
 
 ### 3. Setup Browser Profile (Optional, but Recommended)
 If you want the agent to use your accounts (e.g., logged into Google), run the profile builder:

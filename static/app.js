@@ -11,10 +11,15 @@
   const runState = document.getElementById("run-state") || { textContent: "", classList: { toggle() {} } };
   const statusText = document.getElementById("status-text");
   const keepBrowserOpenToggle = document.getElementById("keep-browser-open");
+  const downloadFeedButton = document.getElementById("download-feed");
   const suggestionPills = Array.from(document.querySelectorAll(".suggestion-pill"));
   const pageShell = document.querySelector(".page-shell");
 
   let running = false;
+  let currentObjective = "";
+  let feedEntries = [];
+  let finalReportText = "";
+  let tokenLog = [];
 
   function escapeHtml(value) {
     return String(value)
@@ -98,17 +103,30 @@
   function clearOutput() {
     updates.innerHTML = "";
     finalReport.innerHTML = "The final answer from the agent will appear here.";
+    feedEntries = [];
+    finalReportText = "";
+    tokenLog = [];
+    if (downloadFeedButton) {
+      downloadFeedButton.disabled = true;
+    }
     previewImage.classList.add("hidden");
     previewImage.removeAttribute("src");
     previewPlaceholder.classList.remove("hidden");
     document.body.classList.remove("result-mode");
   }
 
-  function appendUpdate(message, imageBase64) {
+  function appendUpdate(message, imageBase64, tokenInfo) {
     const item = document.createElement("article");
     item.className = "update-item";
 
     const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    feedEntries.push({ time, message: String(message || ""), imageBase64: imageBase64 || "" });
+    if (tokenInfo) {
+      tokenLog.push(tokenInfo);
+    }
+    if (downloadFeedButton) {
+      downloadFeedButton.disabled = false;
+    }
     item.innerHTML = `
       <div class="update-meta">
         <span class="update-dot"></span>
@@ -124,6 +142,132 @@
       previewImage.classList.remove("hidden");
       previewPlaceholder.classList.add("hidden");
     }
+  }
+
+  function slugify(value) {
+    const slug = String(value || "agent-run")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+    return slug || "agent-run";
+  }
+
+  function buildFeedMarkdown() {
+    const startedAt = new Date().toLocaleString();
+    const totalPromptTokens = tokenLog.reduce((s, t) => s + (t.prompt_tokens || 0), 0);
+    const totalResponseTokens = tokenLog.reduce((s, t) => s + (t.response_tokens || 0), 0);
+
+    const lines = [
+      "# Agentic Browser Live Feed",
+      "",
+      `**Task:** ${currentObjective || "Untitled run"}`,
+      `**Exported:** ${startedAt}`,
+      `**Total Steps with AI calls:** ${tokenLog.length}`,
+      `**Total Prompt Tokens (sent):** ${totalPromptTokens.toLocaleString()}`,
+      `**Total Response Tokens (received):** ${totalResponseTokens.toLocaleString()}`,
+      `**Total Tokens:** ${(totalPromptTokens + totalResponseTokens).toLocaleString()}`,
+      "",
+      "---",
+      "",
+    ];
+
+    // --- Token Usage Summary Table ---
+    if (tokenLog.length) {
+      lines.push("## Token Usage Summary");
+      lines.push("");
+      lines.push("| Step | Prompt Tokens (Sent) | Response Tokens (Received) | Total |");
+      lines.push("|------|----------------------|----------------------------|-------|");
+      tokenLog.forEach((t) => {
+        const total = (t.prompt_tokens || 0) + (t.response_tokens || 0);
+        lines.push(
+          `| ${t.step} | ${(t.prompt_tokens || 0).toLocaleString()} | ${(t.response_tokens || 0).toLocaleString()} | ${total.toLocaleString()} |`
+        );
+      });
+      lines.push(
+        `| **Total** | **${totalPromptTokens.toLocaleString()}** | **${totalResponseTokens.toLocaleString()}** | **${(totalPromptTokens + totalResponseTokens).toLocaleString()}** |`
+      );
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
+
+    // --- Live Feed ---
+    lines.push("## Live Feed");
+    lines.push("");
+
+    if (!feedEntries.length) {
+      lines.push("No live feed entries were captured.");
+    }
+
+    feedEntries.forEach((entry, index) => {
+      lines.push(`### ${index + 1}. ${entry.time}`);
+      lines.push("");
+      lines.push(entry.message);
+      lines.push("");
+      if (entry.imageBase64) {
+        lines.push(`> 📸 *Screenshot captured at this step (not included in export to keep file readable)*`);
+        lines.push("");
+      }
+    });
+
+    // --- Final Report ---
+    if (finalReportText) {
+      lines.push("## Final Report");
+      lines.push("");
+      lines.push(finalReportText);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
+
+    // --- Full Prompt/Response Log ---
+    if (tokenLog.length) {
+      lines.push("## Full Prompt & Response Log");
+      lines.push("");
+      tokenLog.forEach((t) => {
+        lines.push(`### Step ${t.step}`);
+        lines.push("");
+        lines.push(`**Prompt Tokens:** ${(t.prompt_tokens || 0).toLocaleString()} | **Response Tokens:** ${(t.response_tokens || 0).toLocaleString()}`);
+        lines.push("");
+        lines.push("<details>");
+        lines.push(`<summary>Prompt sent to AI (Step ${t.step})</summary>`);
+        lines.push("");
+        lines.push("```");
+        lines.push(t.prompt_text || "(no prompt captured)");
+        lines.push("```");
+        lines.push("");
+        lines.push("</details>");
+        lines.push("");
+        lines.push("<details>");
+        lines.push(`<summary>Response received from AI (Step ${t.step})</summary>`);
+        lines.push("");
+        lines.push("```json");
+        lines.push(t.response_text || "(no response captured)");
+        lines.push("```");
+        lines.push("");
+        lines.push("</details>");
+        lines.push("");
+        lines.push("---");
+        lines.push("");
+      });
+    }
+
+    return lines.join("\n");
+  }
+
+  function downloadFeed() {
+    const markdown = buildFeedMarkdown();
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    link.href = url;
+    link.download = `${slugify(currentObjective)}-${timestamp}.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   async function streamRun(objective) {
@@ -162,8 +306,9 @@
 
         const event = JSON.parse(line);
         if (event.type === "update") {
-          appendUpdate(event.message, event.image);
+          appendUpdate(event.message, event.image, event.token_info || null);
         } else if (event.type === "result") {
+          finalReportText = String(event.message || "");
           finalReport.innerHTML = renderRichText(event.message);
           document.body.classList.remove("running-mode");
           document.body.classList.add("result-mode");
@@ -171,6 +316,7 @@
             animateScrollTo(reportPanel, 24, 1100);
           }, 260);
         } else if (event.type === "error") {
+          finalReportText = `Error: ${event.message}`;
           finalReport.innerHTML = renderRichText(`**Error:** ${event.message}`);
           document.body.classList.remove("running-mode");
           document.body.classList.add("result-mode");
@@ -188,6 +334,10 @@
       objectiveInput.focus();
     });
   });
+
+  if (downloadFeedButton) {
+    downloadFeedButton.addEventListener("click", downloadFeed);
+  }
 
   document.addEventListener("pointermove", (event) => {
     const x = (event.clientX / window.innerWidth) * 100;
@@ -215,6 +365,7 @@
     }
 
     clearOutput();
+    currentObjective = objective;
     appendUpdate(`**Mission received:** ${objective}`, null);
     setRunningState(true);
     animateScrollTo(resultsPanel, 18, 1000);
@@ -222,6 +373,7 @@
     try {
       await streamRun(objective);
     } catch (error) {
+      finalReportText = `Error: ${error.message || "Something went wrong while running the agent."}`;
       finalReport.innerHTML = renderRichText(
         `**Error:** ${error.message || "Something went wrong while running the agent."}`
       );

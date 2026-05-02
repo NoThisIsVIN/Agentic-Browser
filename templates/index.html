@@ -44,10 +44,10 @@
                 <span class="backend-accent">{{ model_info.accent }}</span>
               </span>
               <span class="backend-model">{{ model_info.model }}</span>
-              {% if model_info.project %}
-              <span class="backend-model">{{ model_info.project }} · {{ model_info.location }}</span>
-              {% endif %}
               <span class="backend-model">RPM: {{ model_info.rpm }} · Output: {{ model_info.maxOutputTokens }} tokens</span>
+              {% if model_info.contextWindow %}
+              <span class="backend-model">Context: {{ model_info.contextWindow }} tokens</span>
+              {% endif %}
               <span class="backend-status">{{ model_info.status }}</span>
             </article>
           </div>
@@ -58,7 +58,7 @@
 
             <div class="suggestions">
               <button type="button" class="suggestion-pill">Open Python.org and tell me the first headline on the homepage.</button>
-              <button type="button" class="suggestion-pill">Open YouTube, search for Gemini API browser agent, and tell me the first video title.</button>
+              <button type="button" class="suggestion-pill">Open YouTube, search for browser automation agent, and tell me the first video title.</button>
               <button type="button" class="suggestion-pill">Search Amazon India for a wireless mouse under Rs. 1000 and tell me the first three products.</button>
             </div>
 

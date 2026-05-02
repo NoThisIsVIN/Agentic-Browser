@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -7,67 +8,80 @@ import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 from playwright.async_api import async_playwright
 
 from schema import AgentOutput
+
+# --- Optional SDK imports ---
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
+
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except ImportError:
+    genai = None
+    genai_types = None
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 _RETAINED_BROWSER_SESSION = None
-_GEMINI_RATE_LIMIT_LOCK = threading.Lock()
-_NEXT_GEMINI_REQUEST_AT = 0.0
+_RATE_LIMIT_LOCK = threading.Lock()
+_NEXT_REQUEST_AT = 0.0
 _NO_EVALUATE_DEFAULT = object()
 
 _MODEL_LIMITS = {
+    # Anthropic
+    "claude-haiku-4-5-20251001": {
+        "context_window": 200_000,
+        "max_output_tokens": 1024,
+        "default_rpm_limit": 50,
+    },
+    # Google
     "gemini-2.5-flash": {
-        "input_token_limit": 1_000_000,
-        "output_token_limit": 8192,
+        "context_window": 1_000_000,
+        "max_output_tokens": 1024,
         "default_rpm_limit": 15,
-        "default_thinking_level": "none",
     },
     "gemini-2.5-flash-lite": {
-        "input_token_limit": 1_000_000,
-        "output_token_limit": 8192,
+        "context_window": 1_000_000,
+        "max_output_tokens": 1024,
         "default_rpm_limit": 15,
-        "default_thinking_level": "none",
-    },
-    "gemini-3.1-pro-preview": {
-        "input_token_limit": 1_000_000,
-        "output_token_limit": 8192,
-        "default_rpm_limit": 6,
-        "default_thinking_level": "low",
-    },
-    "gemini-3.1-flash-lite-preview": {
-        "input_token_limit": 1_048_576,
-        "output_token_limit": 65_535,
-        "default_rpm_limit": 15,
-        "default_thinking_level": "none",
     },
 }
 
 
-def _normalize_google_application_credentials():
-    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip().strip('"')
-    if not credentials_path:
-        return None
-
-    resolved_path = Path(credentials_path)
-    if not resolved_path.is_absolute():
-        resolved_path = BASE_DIR / resolved_path
-
-    if resolved_path.exists():
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(resolved_path)
-        return resolved_path
-
-    return None
+def _detect_provider():
+    """Auto-detect AI provider from environment variables."""
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    if os.getenv("GOOGLE_API_KEY"):
+        return "google"
+    raise RuntimeError(
+        "No API key found. Set ANTHROPIC_API_KEY or GOOGLE_API_KEY in your .env file."
+    )
 
 
-def _build_genai_client():
-    _normalize_google_application_credentials()
-    return genai.Client()
+def _get_model_name():
+    provider = _detect_provider()
+    if provider == "anthropic":
+        return os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    return os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+
+
+def _build_client():
+    provider = _detect_provider()
+    if provider == "anthropic":
+        if anthropic is None:
+            raise RuntimeError("anthropic package not installed. Run: pip install anthropic")
+        return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    else:
+        if genai is None:
+            raise RuntimeError("google-genai package not installed. Run: pip install google-genai")
+        return genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
 def _is_transient_navigation_error(exc):
@@ -103,14 +117,14 @@ async def _evaluate_page_safely(page, script, default=_NO_EVALUATE_DEFAULT, atte
 async def get_dom_snapshot(page, deep_read=False):
     """Capture a richer interactive page snapshot for the model."""
     if deep_read:
-        selectors = "button, a, input, select, option, [role=\"button\"], [role=\"link\"], textarea, h1, h2, h3, p, li, label, [contenteditable=\"true\"]"
+        selectors = "button, a, input, select, option, [role=\"button\"], [role=\"link\"], [role=\"option\"], [role=\"menuitem\"], [role=\"heading\"], textarea, h1, h2, h3, p, li, label, [contenteditable=\"true\"]"
         max_chars = 1000
         max_elements = 180
         include_layout = "false"
     else:
-        selectors = "button, a, input, select, [role=\"button\"], [role=\"link\"], textarea, h1, h2, h3, label, [contenteditable=\"true\"]"
-        max_chars = 160
-        max_elements = 150
+        selectors = "button, a, input, select, li, [role=\"button\"], [role=\"link\"], [role=\"option\"], [role=\"menuitem\"], [role=\"heading\"], textarea, h1, h2, h3, label, [contenteditable=\"true\"]"
+        max_chars = 120
+        max_elements = 120
         include_layout = "false"
 
     js_code = f"""
@@ -184,25 +198,20 @@ async def get_dom_snapshot(page, deep_read=False):
                 [cleanText, ariaLabel, placeholder, name, title].join(' ')
             );
 
-            let item = {{
-                id: id,
-                tag: el.tagName,
-                text: cleanText,
-                type: el.type || 'N/A',
-                role: role || 'N/A',
-                aria_label: ariaLabel,
-                placeholder: placeholder,
-                name: name,
-                title: title,
-                href: href,
-                value: value,
-                required: Boolean(el.required),
-                disabled: Boolean(el.disabled),
-                checked: Boolean(el.checked),
-                form_id: formId,
-                form_name: formName,
-                search_candidate: searchCandidate
-            }};
+            let item = {{ id: id, tag: el.tagName }};
+            if (cleanText && cleanText !== 'No Text') item.text = cleanText;
+            if (el.type && el.type !== 'submit' && el.type !== 'button') item.type = el.type;
+            if (role) item.role = role;
+            if (ariaLabel) item.aria_label = ariaLabel;
+            if (placeholder) item.placeholder = placeholder;
+            if (name) item.name = name;
+            if (title) item.title = title;
+
+            if (value) item.value = value;
+            if (el.required) item.required = true;
+            if (el.disabled) item.disabled = true;
+            if (el.checked) item.checked = true;
+            if (searchCandidate) item.search = true;
             if ({include_layout}) {{
                 item.x = Math.round(rect.x);
                 item.y = Math.round(rect.y);
@@ -336,12 +345,12 @@ def _get_model_limits(model_name):
     return _MODEL_LIMITS.get(normalized_model, {})
 
 
-def _get_gemini_request_interval_seconds(model_name=None):
-    disable_local_limit = os.getenv("GEMINI_DISABLE_LOCAL_RATE_LIMIT", "").strip().lower()
+def _get_request_interval_seconds(model_name=None):
+    disable_local_limit = os.getenv("DISABLE_LOCAL_RATE_LIMIT", "").strip().lower()
     if disable_local_limit in {"1", "true", "yes"}:
         return 0.0
 
-    rpm_text = os.getenv("GEMINI_RPM_LIMIT", "").strip()
+    rpm_text = os.getenv("RPM_LIMIT", "").strip()
     if rpm_text:
         try:
             rpm_value = float(rpm_text)
@@ -350,26 +359,17 @@ def _get_gemini_request_interval_seconds(model_name=None):
         except ValueError:
             pass
 
-    interval_text = os.getenv("GEMINI_REQUEST_INTERVAL_SECONDS", "").strip()
-    if interval_text:
-        try:
-            interval_value = float(interval_text)
-            if interval_value > 0:
-                return interval_value
-        except ValueError:
-            pass
-
     model_rpm_limit = _get_model_limits(model_name).get("default_rpm_limit")
     if model_rpm_limit:
         return 60.0 / model_rpm_limit
 
-    return 15.0
+    return 1.2
 
 
-def _get_gemini_max_output_tokens(model_name):
+def _get_max_output_tokens(model_name):
     limits = _get_model_limits(model_name)
-    output_limit = int(limits.get("output_token_limit") or 8192)
-    token_text = os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "").strip()
+    output_limit = int(limits.get("max_output_tokens") or 8192)
+    token_text = os.getenv("MAX_OUTPUT_TOKENS", "").strip()
     if not token_text:
         return output_limit
 
@@ -381,28 +381,13 @@ def _get_gemini_max_output_tokens(model_name):
     return min(max(requested_tokens, 1), output_limit)
 
 
-def _get_gemini_thinking_level(model_name):
-    requested_level = os.getenv("GEMINI_THINKING_LEVEL", "").strip().lower()
-    if requested_level:
-        return None if requested_level == "none" else requested_level
-
-    val = _get_model_limits(model_name).get("default_thinking_level")
-    return None if val == "none" else val
-
-
-def _build_gemini_generation_config(model_name):
-    config_kwargs = {
-        "response_mime_type": "application/json",
-        "response_schema": AgentOutput,
-        "temperature": 0.0,
-        "max_output_tokens": _get_gemini_max_output_tokens(model_name),
+def _build_agent_tool():
+    """Build the Anthropic tool definition from the AgentOutput Pydantic schema."""
+    return {
+        "name": "browser_action",
+        "description": "Execute browser actions. You MUST call this tool.",
+        "input_schema": AgentOutput.model_json_schema(),
     }
-
-    thinking_level = _get_gemini_thinking_level(model_name)
-    if thinking_level:
-        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
-
-    return types.GenerateContentConfig(**config_kwargs)
 
 
 def _get_agent_max_steps():
@@ -415,30 +400,100 @@ def _get_agent_max_steps():
     return min(max(max_steps, 1), 100)
 
 
-async def _respect_gemini_rate_limit(model_name=None, ui_callback=None):
-    global _NEXT_GEMINI_REQUEST_AT
+async def _respect_rate_limit(model_name=None):
+    global _NEXT_REQUEST_AT
 
-    interval_seconds = _get_gemini_request_interval_seconds(model_name)
+    interval_seconds = _get_request_interval_seconds(model_name)
     wait_seconds = 0.0
 
-    with _GEMINI_RATE_LIMIT_LOCK:
+    with _RATE_LIMIT_LOCK:
         now = time.monotonic()
-        wait_seconds = max(0.0, _NEXT_GEMINI_REQUEST_AT - now)
-        scheduled_start = max(now, _NEXT_GEMINI_REQUEST_AT)
-        _NEXT_GEMINI_REQUEST_AT = scheduled_start + interval_seconds
+        wait_seconds = max(0.0, _NEXT_REQUEST_AT - now)
+        scheduled_start = max(now, _NEXT_REQUEST_AT)
+        _NEXT_REQUEST_AT = scheduled_start + interval_seconds
 
     if wait_seconds > 0:
         await asyncio.sleep(wait_seconds)
 
 
-async def _generate_content_with_rate_limit_retry(client, model_name, contents_payload, ui_callback=None):
-    await _respect_gemini_rate_limit(model_name=model_name, ui_callback=ui_callback)
-    return await asyncio.to_thread(
-        client.models.generate_content,
-        model=model_name,
-        contents=contents_payload,
-        config=_build_gemini_generation_config(model_name),
+async def _call_llm(client, provider, model_name, system_prompt, context_text, screenshot_bytes=None):
+    """Unified LLM call. Returns (ai_decision_dict, prompt_tokens, response_tokens, raw_text)."""
+    await _respect_rate_limit(model_name=model_name)
+    max_tokens = _get_max_output_tokens(model_name)
+
+    if provider == "anthropic":
+        return await _call_anthropic_impl(client, model_name, system_prompt, context_text, screenshot_bytes, max_tokens)
+    else:
+        return await _call_google_impl(client, model_name, system_prompt, context_text, screenshot_bytes, max_tokens)
+
+
+async def _call_anthropic_impl(client, model_name, system_prompt, context_text, screenshot_bytes, max_tokens):
+    user_content = [{"type": "text", "text": context_text}]
+    if screenshot_bytes:
+        user_content.append({"type": "text", "text": "\n\nVISION: Screenshot attached. Analyze it."})
+        user_content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(screenshot_bytes).decode("ascii")},
+        })
+
+    tool_def = _build_agent_tool()
+
+    def _sync():
+        return client.messages.create(
+            model=model_name, max_tokens=max_tokens, temperature=0.0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+            tools=[tool_def],
+            tool_choice={"type": "tool", "name": "browser_action"},
+        )
+
+    response = await asyncio.to_thread(_sync)
+
+    prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
+    response_tokens = getattr(response.usage, "output_tokens", 0) or 0
+
+    tool_block = next((b for b in response.content if b.type == "tool_use" and b.name == "browser_action"), None)
+    if tool_block is None:
+        raise ValueError("No browser_action tool call in response")
+
+    ai_decision = tool_block.input
+    return ai_decision, prompt_tokens, response_tokens, json.dumps(ai_decision, indent=2)
+
+
+async def _call_google_impl(client, model_name, system_prompt, context_text, screenshot_bytes, max_tokens):
+    prompt = system_prompt + "\n\n" + context_text
+    contents = [prompt]
+    if screenshot_bytes:
+        contents[0] += "\n\nVISION: Screenshot attached. Analyze it."
+        contents.append(genai_types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png"))
+
+    config = genai_types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=AgentOutput,
+        temperature=0.0,
+        max_output_tokens=max_tokens,
     )
+
+    def _sync():
+        return client.models.generate_content(model=model_name, contents=contents, config=config)
+
+    response = await asyncio.to_thread(_sync)
+
+    prompt_tokens = 0
+    response_tokens = 0
+    usage = getattr(response, "usage_metadata", None)
+    if usage:
+        prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        response_tokens = getattr(usage, "candidates_token_count", 0) or 0
+
+    raw_text = response.text.strip()
+    if raw_text.startswith("```json"):
+        raw_text = raw_text[7:-3].strip()
+    elif raw_text.startswith("```"):
+        raw_text = raw_text[3:-3].strip()
+
+    ai_decision = json.loads(raw_text)
+    return ai_decision, prompt_tokens, response_tokens, raw_text
 
 
 def _repeat_guard_message(action_type):
@@ -713,8 +768,9 @@ async def _wait_for_media_completion(page, ui_callback=None):
 
 
 async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
-    client = _build_genai_client()
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    provider = _detect_provider()
+    client = _build_client()
+    model_name = _get_model_name()
     global _RETAINED_BROWSER_SESSION
 
     await _release_retained_browser_session()
@@ -773,108 +829,93 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                 stall_recovery_attempts = 0
             last_observation_key = observation_key
 
-            prompt = f"""
-            # SYSTEM INSTRUCTIONS
-            You are an elite autonomous web agent. Your job is to achieve the user's objective by navigating the web, extracting information, and taking actions.
+            system_prompt = """\
+You are a fast autonomous web agent. Achieve the user's objective via browser actions.
 
-            # STRATEGY
-            Before acting, mentally break the goal into ordered sub-steps.
-            After each action, check whether the page confirms success before continuing.
-            If the page looks the same after an action, assume it failed and try a different approach.
-            Keep a short running memory and update it honestly every step.
+# BREVITY RULES
+- All fields must be minimal. No essays, no restating the objective.
+- evaluation_previous_goal: "Success/Failed/Unknown" + max 5 words.
+- memory: bullet-style notes only.
+- next_goal: ONE short action phrase.
 
-            # YOUR TOOLKIT RULES
-            1. Navigation: Use "goto" to open a URL. Use "scroll" to move up or down.
-            2. Interaction: Use "click" and "type" using the provided element IDs from the JSON. Use "press" for keyboard keys (e.g. "Enter", "Escape", "Tab").
-            3. Reading: The JSON provides basic text. If text is hidden in paragraphs, use "read".
-            4. VISION (CRITICAL): If you need to solve a visual problem (like a math formula, an image, or a complex diagram) that is NOT readable in the JSON, use the "look" tool to take a screenshot.
-            5. ANTI-LOOP RULE: Do not use the "scroll" action, or "click" the exact same ID, more than twice in a row.
-            6. THE POPUP PROTOCOL: If you click a button and the page does not change, a popup or modal is likely blocking your screen. You MUST either use the "press" tool with the "Escape" key to kill the popup, or use the "look" tool to see what is blocking you.
-            7. SUCCESS RECOGNITION: E-commerce sites often redirect you or show "Subtotal (1 item)" after adding an item. If you see evidence that your goal was achieved, DO NOT second-guess yourself or restart. Immediately use the "finish" action.
-            8. TYPING: After using "type", do NOT assume Enter was pressed. If you need to submit a form or trigger a search, issue a separate "press" action with key "Enter".
-            9. SEARCH RE-ENTRY RULE: If the same search text was already typed into a search field, do NOT type it again immediately. First confirm the current page state using the DOM or screenshot, then continue with the next step.
-            10. STALL RECOVERY RULE: If the page observation repeat count is above 0, do NOT repeat the same weak action. Prefer pressing Enter after a search, clicking a visible submit/search button, using Escape for popups, or using read/look to regain context.
-            11. RESPONSE FORMAT: Fill current_state.evaluation_previous_goal, current_state.memory, and current_state.next_goal carefully. The next_goal should be one immediate step, not the whole plan.
-            12. DIRECT NAVIGATION RULE: If the user clearly names a known website like Amazon, Blinkit, Flipkart, Myntra, Zepto, YouTube, Wikipedia, Python, or GitHub, go directly to that site instead of using Google as an intermediate step.
-            13. FINISH SUMMARY RULE: When you use finish, the reason must be a short user-facing summary in one or two concise sentences.
-            14. STRUCTURED RESULT RULE: For shopping, product, price-check, shortlist, and comparison tasks, finish.reason must be neatly formatted in Markdown with up to 3 visible items using this style when possible: `1. Product Name - Price: Rs. 499 - [Link](https://example.com)`. Only include products, prices, and links that are actually visible on the current page or screenshot.
-            15. SHOPPING EFFICIENCY RULE: On e-commerce search result pages (Amazon, Flipkart, etc.), prefer clicking the "Add to Cart" button directly from the search results list instead of opening individual product pages. Only navigate to a product page if no "Add to Cart" button is visible on the search results.
+# MULTI-ACTION
+- Return 1-5 actions in the "actions" list. They execute in sequence.
+- Combine related steps: e.g. [type search, press Enter] or [click Add to Cart, scroll down].
+- Do NOT combine actions that depend on page changes (e.g. goto + click).
 
-            # CONTEXT
-            Current URL: {current_url}
-            Current Page Title: {page_title}
-            Last Goal: {last_next_goal}
-            Last Action Result: {last_action_result}
-            Observation Repeat Count: {repeated_observation_count}
-            Last Entered Text: {last_typed_text or "None"}
-            Last Entered Field: {last_typed_field or "None"}
-            Last Entered URL: {last_typed_url or "None"}
-            Running Memory: {agent_memory}
+# RULES
+1. NAVIGATION: Use "goto" to open a URL. Use "scroll" to move up or down.
+2. INTERACTION: Use "click" and "type" with element IDs. Use "press" for keys (e.g., "Enter", "Escape").
+3. READING: If text is hidden in long paragraphs, use "read".
+4. ANTI-LOOP RULE: Do not "scroll" or "click" the exact same ID more than twice in a row.
+5. THE POPUP PROTOCOL: If you click a button and nothing changes, a popup is likely blocking you. Use "press" with "Escape" to kill it.
+6. SUCCESS RECOGNITION (NO VERIFY): When you click "Add to Cart", ASSUME IT WORKED. DO NOT try to verify it. DO NOT use "wait", and DO NOT click the cart icon. Immediately move to the next item or use "finish".
+7. TYPING: After "type", do NOT assume Enter was pressed. Use a separate "press" action if needed.
+8. HALLUCINATION PREVENTION: Never assume a search or action worked until you physically see the new results in the JSON. If the DOM hasn't changed, your previous action failed (or you forgot to press Enter). Try again instead of hallucinating success.
+9. STALL RECOVERY: If observation repeat count > 0, do NOT repeat the same weak action. Try "press" Enter, click a visible button, use Escape, or "read".
+10. DIRECT NAVIGATION: Go directly to known sites (Amazon, Blinkit, YouTube, GitHub, etc.) instead of Google.
+11. SHOPPING EFFICIENCY: On e-commerce sites, if you are on a product page and cannot see the "Add to Cart" button in the JSON, scroll or click carefully to find it.
+12. FINISH SUMMARY: Use "finish" with a 1-2 sentence user-facing summary.
+13. STRUCTURED RESULT: For product/price tasks, format finish.reason nicely: `1. Product Name - Price`.
+14. RESEARCH PROTOCOL: For comparisons (e.g., "which is better"), DO NOT research specs or reviews on the web. Pick the winner instantly using your internal knowledge. THEN, physically navigate to the store and add it to the cart. ONLY use "finish" AFTER the item is in the cart, and include your explanation in the finish reason.
+15. FLIGHT PROTOCOL: If asked to search for flights, go directly to google.com/flights. Use standard keyboard actions to set date inputs if the calendar UI is too complex."""
 
-            Past Actions Taken (DO NOT REPEAT THESE):
-            {json.dumps(action_history[:1] + action_history[-4:] if len(action_history) > 5 else action_history, indent=2)}
+            context_text = f"""\
+URL: {current_url}
+Title: {page_title}
+Last Goal: {last_next_goal}
+Last Result: {last_action_result}
+Repeat Count: {repeated_observation_count}
+Memory: {agent_memory}
 
-            Current Screen Elements (JSON):
-            {json.dumps(dom_data, indent=2)}
+Past Actions (DO NOT REPEAT):
+{json.dumps(action_history[:1] + action_history[-4:] if len(action_history) > 5 else action_history)}
 
-            # USER OBJECTIVE
-            Goal: {user_objective}
+Elements:
+{json.dumps(dom_data)}
 
-            What is your next logical step? Output strictly matching the Pydantic schema.
-            """
+Goal: {user_objective}"""
 
-            contents_payload = [prompt]
             screenshot_bytes = None
-
             if needs_vision:
                 print("Snapping photo for AI...")
                 screenshot_bytes = await page.screenshot()
-                contents_payload[0] = (
-                    prompt
-                    + "\n\nVISION MODULE ACTIVE: A screenshot of the current page is attached. "
-                    + "Analyze the image to find the unextractable data."
-                )
-                contents_payload.append(types.Part.from_bytes(data=screenshot_bytes, mime_type="image/png"))
                 needs_vision = False
 
-            response = await _generate_content_with_rate_limit_retry(
-                client=client,
-                model_name=model_name,
-                contents_payload=contents_payload,
-                ui_callback=ui_callback,
-            )
-
-            # --- Extract token usage metadata ---
-            prompt_tokens = 0
-            response_tokens = 0
             try:
-                usage = getattr(response, "usage_metadata", None)
-                if usage:
-                    prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
-                    response_tokens = getattr(usage, "candidates_token_count", 0) or 0
-            except Exception:
-                pass
+                ai_decision, prompt_tokens, response_tokens, raw_text = await _call_llm(
+                    client=client, provider=provider, model_name=model_name,
+                    system_prompt=system_prompt, context_text=context_text,
+                    screenshot_bytes=screenshot_bytes,
+                )
+            except Exception as exc:
+                print(f"LLM Call Error: {exc}")
+                step_count += 1
+                await asyncio.sleep(5)
+                continue
 
-            prompt_text_for_log = contents_payload[0] if contents_payload else ""
+            prompt_text_for_log = context_text
 
             try:
-                raw_text = response.text.strip()
-                if raw_text.startswith("```json"):
-                    raw_text = raw_text[7:-3].strip()
-                elif raw_text.startswith("```"):
-                    raw_text = raw_text[3:-3].strip()
-
-                ai_decision = json.loads(raw_text)
                 current_state = ai_decision.get("current_state", {}) or {}
-                action_type = ai_decision["command"]["action"]
-                thought = ai_decision.get("thought") or current_state.get("next_goal") or "Thinking..."
+                actions_list = ai_decision.get("actions", [])
+                if not actions_list:
+                    # Backward compat: check for single "command"
+                    cmd = ai_decision.get("command")
+                    if cmd:
+                        actions_list = [cmd]
+                    else:
+                        raise ValueError("No actions in response")
+
+                thought = current_state.get("next_goal") or "Thinking..."
                 evaluation_previous_goal = current_state.get("evaluation_previous_goal", "")
                 agent_memory = current_state.get("memory") or agent_memory
                 last_next_goal = current_state.get("next_goal") or last_next_goal
 
+                action_names = ", ".join(a.get("action", "?") for a in actions_list)
                 if ui_callback:
                     ui_callback(
-                        f"**Step {step_count + 1} — Tokens:** prompt {prompt_tokens:,} · response {response_tokens:,}",
+                        f"**Step {step_count + 1} ({len(actions_list)} actions) — Tokens:** prompt {prompt_tokens:,} · response {response_tokens:,}",
                         token_info={
                             "step": step_count + 1,
                             "prompt_tokens": prompt_tokens,
@@ -884,239 +925,144 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
                         },
                     )
                     if screenshot_bytes:
-                        ui_callback(f"**Thought:** {thought}", image_bytes=screenshot_bytes)
+                        ui_callback(f"**Goal:** {thought}", image_bytes=screenshot_bytes)
                     else:
-                        ui_callback(f"**Thought:** {thought}")
+                        ui_callback(f"**Goal:** {thought}")
                     if evaluation_previous_goal:
                         ui_callback(f"**Assessment:** {evaluation_previous_goal}")
-                    ui_callback(f"**Action:** `{action_type}`")
+                    ui_callback(f"**Actions:** `{action_names}`")
 
             except Exception as exc:
-                print(f"JSON Parse Error: {exc}")
+                print(f"Response Parse Error: {exc}")
                 step_count += 1
                 await asyncio.sleep(5)
                 continue
 
-            if action_type == "type":
-                element_id = ai_decision["command"]["element_id"]
-                text_to_type = ai_decision["command"]["text"]
-                element_details = _get_element_details(dom_data, element_id)
-                element_label = element_details["text"][:40] if element_details else "unknown field"
-                is_repeat_text = _normalize_text(text_to_type) == _normalize_text(last_typed_text)
-                is_repeat_context = current_url == last_typed_url and element_label == (last_typed_field or element_label)
+            # --- Execute each action in the multi-action list ---
+            should_break = False
+            for action_cmd in actions_list:
+                action_type = action_cmd.get("action", "")
 
-                if last_typed_text and is_repeat_text and is_repeat_context and _is_search_like_element(element_details):
-                    if ui_callback:
-                        ui_callback(
-                            "**Guard:** The same search text was already entered here. Taking a fresh screen check instead of retyping it."
-                        )
-                    action_history.append(
-                        f"Blocked repeated search typing for '{text_to_type}' in '{element_label}' and requested confirmation first (Step {step_count})"
-                    )
-                    needs_vision = True
-                    step_count += 1
-                    await asyncio.sleep(1)
-                    continue
+                if action_type == "finish":
+                    if _is_media_objective(user_objective):
+                        await _wait_for_media_completion(page, ui_callback=ui_callback)
+                    final_report = _finalize_report(action_cmd.get("reason", ""), user_objective)
+                    should_break = True
+                    break
 
-            signature = None
-            if action_type == "goto":
-                signature = ("goto", ai_decision["command"]["url"])
-            elif action_type == "type":
-                signature = ("type", ai_decision["command"]["element_id"], ai_decision["command"]["text"])
-            elif action_type == "click":
-                signature = ("click", ai_decision["command"]["element_id"])
-            elif action_type == "press":
-                signature = ("press", ai_decision["command"]["key"])
+                if action_type == "read":
+                    needs_deep_read = True
+                    last_action_result = "Deep text scan requested."
+                    action_history.append(f"Deep read (Step {step_count})")
+                    break
 
-            if signature and len(action_signatures) >= 2 and action_signatures[-2:] == [signature, signature]:
-                if repeated_observation_count >= 1 and stall_recovery_attempts < 2:
-                    stall_recovery_attempts += 1
-                    recovery_mode = "vision" if not needs_vision else "deep read"
-                    if ui_callback:
-                        ui_callback(
-                            f"**Recovery:** Repeated action on an unchanged page detected. Switching to {recovery_mode} before retrying."
-                        )
-                    action_history.append(
-                        f"Detected a stall after repeating {action_type}; switched to fresh inspection ({recovery_mode}) instead of blindly retrying (Step {step_count})"
-                    )
-                    if needs_vision:
-                        needs_deep_read = True
-                    else:
+                if action_type == "wait":
+                    last_action_result = "Waited for page to update and grabbed fresh DOM."
+                    action_history.append(f"Wait (Step {step_count})")
+                    await asyncio.sleep(2)
+                    break
+
+                if action_type == "evaluate_js":
+                    js_code = action_cmd.get("script", "")
+                    try:
+                        res = await page.evaluate(js_code)
+                        last_action_result = f"JS Executed successfully. Returned: {res}"
+                    except Exception as e:
+                        last_action_result = f"JS Error: {str(e)}"
+                    action_history.append(f"evaluate_js (Step {step_count})")
+                    break
+
+                if action_type == "goto":
+                    target_url = action_cmd.get("url", "")
+                    if not target_url.startswith("http"):
+                        target_url = "https://" + target_url
+                    direct_site_url = _infer_direct_site_url(user_objective)
+                    if direct_site_url and _is_google_search_url(target_url):
+                        target_url = direct_site_url
+                    try:
+                        await page.goto(target_url)
+                        await _settle_page(page, delay_seconds=1.5)
+                    except Exception as exc:
+                        error_text = str(exc)
+                        if "ERR_NAME_NOT_RESOLVED" in error_text:
+                            final_report = f"Could not open `{target_url}` — domain not resolved."
+                            should_break = True
+                            break
+                        if "ERR_HTTP_RESPONSE_CODE_FAILURE" in error_text:
+                            final_report = f"Site `{target_url}` blocked navigation."
+                            should_break = True
+                            break
+                        raise
+                    last_action_result = f"Navigated to {target_url}."
+                    action_history.append(f"Goto {target_url} (Step {step_count})")
+
+                elif action_type == "scroll":
+                    direction = action_cmd.get("direction", "down")
+                    viewport = page.viewport_size
+                    if viewport:
+                        await page.mouse.move(viewport["width"] / 2, viewport["height"] / 2)
+                    delta = 800 if direction == "down" else -800
+                    await page.mouse.wheel(0, delta)
+                    last_action_result = f"Scrolled {direction}."
+                    action_history.append(f"Scrolled {direction} (Step {step_count})")
+
+                elif action_type == "press":
+                    key = action_cmd.get("key", "Enter")
+                    await page.keyboard.press(key)
+                    last_action_result = f"Pressed {key}."
+                    if _normalize_text(key) == "enter":
+                        last_typed_text = None
+                        last_typed_field = None
+                        last_typed_url = None
+                    action_history.append(f"Pressed '{key}' (Step {step_count})")
+
+                elif action_type == "type":
+                    element_id = action_cmd.get("element_id", 0)
+                    text_to_type = action_cmd.get("text", "")
+                    target_locator = page.locator(f'[data-agent-id="{element_id}"]').first
+                    element_label = next((el.get("text", "")[:40] for el in dom_data if el["id"] == element_id), "field")
+
+                    previous_page_count = len([c for c in context.pages if not c.is_closed()])
+                    clicked = await _click_locator_safely(target_locator)
+                    if not clicked:
+                        last_action_result = f"Could not focus {element_label}."
                         needs_vision = True
-                    step_count += 1
-                    await asyncio.sleep(1)
-                    continue
-                final_report = _repeat_guard_message(action_type)
-                break
-
-            if signature:
-                action_signatures.append(signature)
-
-            if action_type == "finish":
-                if _is_media_objective(user_objective):
-                    await _wait_for_media_completion(page, ui_callback=ui_callback)
-                last_action_result = "The goal appears complete on the current page."
-                final_report = _finalize_report(ai_decision["command"]["reason"], user_objective)
-                break
-
-            if action_type == "read":
-                needs_deep_read = True
-                last_action_result = "Requested a deeper text scan of the current page."
-                action_history.append(f"Triggered a deep read (Step {step_count})")
-                step_count += 1
-                await asyncio.sleep(2)
-                continue
-
-            if action_type == "look":
-                needs_vision = True
-                last_action_result = "Requested a screenshot-based visual inspection of the current page."
-                action_history.append(f"Triggered the camera to look at the screen (Step {step_count})")
-                step_count += 1
-                await asyncio.sleep(2)
-                continue
-
-            if action_type == "goto":
-                target_url = ai_decision["command"]["url"]
-                if not target_url.startswith("http"):
-                    target_url = "https://" + target_url
-                direct_site_url = _infer_direct_site_url(user_objective)
-                if direct_site_url and _is_google_search_url(target_url):
-                    if ui_callback:
-                        ui_callback(
-                            f"**Direct routing:** The task names a known site, so I am opening `{direct_site_url}` directly instead of going through Google."
-                        )
-                    target_url = direct_site_url
-                try:
-                    await page.goto(target_url)
-                    await _settle_page(page, delay_seconds=4)
-                except Exception as exc:
-                    error_text = str(exc)
-                    if "ERR_NAME_NOT_RESOLVED" in error_text:
-                        final_report = (
-                            f"I could not open `{target_url}` because the domain could not be resolved. "
-                            "Please check the URL or your internet/DNS connection and try again."
-                        )
                         break
-                    if "ERR_HTTP_RESPONSE_CODE_FAILURE" in error_text:
-                        final_report = (
-                            f"I reached `{target_url}`, but the site blocked or rejected the browser navigation. "
-                            "This usually happens because the website returned a restricted page, anti-bot response, "
-                            "or location/login gate. Try running with a visible browser profile instead of headless mode "
-                            "and make sure the saved profile already has the required location or login state."
-                        )
-                        break
-                    raise
-                last_action_result = f"Navigated to {target_url}. Current page is now {page.url}."
-                action_history.append(f"Navigated to {target_url} (Step {step_count})")
-                step_count += 1
-                continue
 
-            if action_type == "scroll":
-                direction = ai_decision["command"]["direction"]
-                viewport = page.viewport_size
-                if viewport:
-                    await page.mouse.move(viewport["width"] / 2, viewport["height"] / 2)
+                    await page.keyboard.press("Control+A")
+                    await page.keyboard.press("Backspace")
+                    await page.keyboard.type(text_to_type, delay=10)
 
-                if direction == "down":
-                    await page.mouse.wheel(0, 800)
-                    await _evaluate_page_safely(page, "window.scrollBy(0, 800)", default=None)
-                    last_action_result = "Scrolled down to reveal more content."
-                    action_history.append(f"Scrolled down (Step {step_count})")
-                else:
-                    await page.mouse.wheel(0, -800)
-                    await _evaluate_page_safely(page, "window.scrollBy(0, -800)", default=None)
-                    last_action_result = "Scrolled up to revisit higher page content."
-                    action_history.append(f"Scrolled up (Step {step_count})")
-
-                step_count += 1
-                continue
-
-            if action_type == "press":
-                key = ai_decision["command"]["key"]
-                await page.keyboard.press(key)
-                last_action_result = f"Pressed the {key} key."
-                if _normalize_text(key) == "enter":
-                    last_typed_text = None
-                    last_typed_field = None
-                    last_typed_url = None
-                action_history.append(f"Pressed '{key}' (Step {step_count})")
-                step_count += 1
-                continue
-
-            if action_type == "type":
-                element_id = ai_decision["command"]["element_id"]
-                target_locator = page.locator(f'[data-agent-id="{element_id}"]').first
-                text_to_type = ai_decision["command"]["text"]
-                element_label = next((el["text"][:40] for el in dom_data if el["id"] == element_id), "unknown field")
-
-                previous_page_count = len([candidate for candidate in context.pages if not candidate.is_closed()])
-                clicked = await _click_locator_safely(target_locator)
-                if not clicked:
-                    last_action_result = f"Could not focus {element_label}; the element disappeared or the page changed."
-                    action_history.append(
-                        f"Could not focus '{element_label}' (ID {element_id}) because the page changed or the element disappeared (Step {step_count})"
-                    )
-                    needs_vision = True
-                    step_count += 1
-                    await asyncio.sleep(1)
-                    continue
-
-                await page.keyboard.press("Control+A")
-                await page.keyboard.press("Backspace")
-                await page.keyboard.type(text_to_type, delay=10)
-
-                # Auto-press Enter after typing into search-like fields
-                element_details = _get_element_details(dom_data, element_id)
-                auto_submitted = False
-                if _is_search_like_element(element_details):
-                    await asyncio.sleep(0.3)
-                    await page.keyboard.press("Enter")
-                    auto_submitted = True
-
-                page = await _adopt_new_tab_after_action(context, page, previous_page_count)
-                await _settle_page(page, delay_seconds=2)
-                last_typed_text = text_to_type
-                last_typed_field = element_label
-                last_typed_url = current_url
-                if auto_submitted:
-                    last_action_result = f"Typed '{text_to_type}' into '{element_label}' and pressed Enter to submit."
-                    action_history.append(
-                        f"Typed '{text_to_type}' into '{element_label}' (ID {element_id}) and auto-pressed Enter (Step {step_count})"
-                    )
-                else:
+                    page = await _adopt_new_tab_after_action(context, page, previous_page_count)
+                    await _settle_page(page, delay_seconds=1)
+                    last_typed_text = text_to_type
+                    last_typed_field = element_label
+                    last_typed_url = current_url
                     last_action_result = f"Typed '{text_to_type}' into '{element_label}'."
-                    action_history.append(
-                        f"Typed '{text_to_type}' into '{element_label}' (ID {element_id}, Step {step_count})"
-                    )
-                step_count += 1
-                continue
+                    action_history.append(f"Typed '{text_to_type}' into '{element_label}' (Step {step_count})")
 
-            if action_type == "click":
-                element_id = ai_decision["command"]["element_id"]
-                target_locator = page.locator(f'[data-agent-id="{element_id}"]').first
-                element_label = next((el["text"][:40] for el in dom_data if el["id"] == element_id), "unknown")
+                elif action_type == "click":
+                    element_id = action_cmd.get("element_id", 0)
+                    target_locator = page.locator(f'[data-agent-id="{element_id}"]').first
+                    element_label = next((el.get("text", "")[:40] for el in dom_data if el["id"] == element_id), "element")
 
-                previous_page_count = len([candidate for candidate in context.pages if not candidate.is_closed()])
-                clicked = await _click_locator_safely(target_locator)
-                if not clicked:
-                    last_action_result = f"Could not click {element_label}; the target disappeared or the page changed."
-                    action_history.append(
-                        f"Could not click '{element_label}' (ID {element_id}) because the page changed or the element disappeared (Step {step_count})"
-                    )
-                    needs_vision = True
-                    step_count += 1
-                    await asyncio.sleep(1)
-                    continue
-                page = await _adopt_new_tab_after_action(context, page, previous_page_count)
-                await _settle_page(page, delay_seconds=2)
-                if _is_search_like_element(_get_element_details(dom_data, element_id)):
-                    last_typed_text = None
-                    last_typed_field = None
-                    last_typed_url = None
-                last_action_result = f"Clicked '{element_label}'. Current page is {page.url}."
-                action_history.append(f"Clicked '{element_label}' (ID {element_id}, Step {step_count})")
+                    previous_page_count = len([c for c in context.pages if not c.is_closed()])
+                    clicked = await _click_locator_safely(target_locator)
+                    if not clicked:
+                        last_action_result = f"Could not click {element_label}."
+                        needs_vision = True
+                        break
+                    page = await _adopt_new_tab_after_action(context, page, previous_page_count)
+                    await _settle_page(page, delay_seconds=1)
+                    last_action_result = f"Clicked '{element_label}'."
+                    action_history.append(f"Clicked '{element_label}' (Step {step_count})")
+
+                # Brief pause between multi-actions
+                await asyncio.sleep(0.3)
 
             step_count += 1
+            if should_break:
+                break
 
         if step_count >= max_steps and final_report == "Task failed or timed out.":
             final_report = (

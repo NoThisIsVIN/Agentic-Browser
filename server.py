@@ -14,12 +14,10 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from main import (
-    _get_gemini_max_output_tokens,
-    _get_gemini_request_interval_seconds,
-    _get_gemini_thinking_level,
+    _get_max_output_tokens,
+    _get_request_interval_seconds,
     _get_model_limits,
-    _normalize_google_application_credentials,
-    run_agent as gemini_run_agent,
+    run_agent as run_agent_core,
 )
 
 if sys.platform == "win32":
@@ -38,25 +36,20 @@ class AgentRequest(BaseModel):
     keep_browser_open: bool = False
 
 
-def _gemini_metadata():
-    credentials_path = _normalize_google_application_credentials()
-    gemini_configured = bool(
-        os.getenv("GEMINI_API_KEY")
-        or os.getenv("GOOGLE_API_KEY")
-    )
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+def _anthropic_metadata():
+    api_key_set = bool(os.getenv("ANTHROPIC_API_KEY"))
+    model_name = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     limits = _get_model_limits(model_name)
-    request_interval = _get_gemini_request_interval_seconds(model_name)
+    request_interval = _get_request_interval_seconds(model_name)
     return {
-        "label": "Gemini API",
-        "status": "Configured" if gemini_configured else "Missing credentials",
+        "label": "Anthropic API",
+        "status": "Configured" if api_key_set else "Missing credentials",
         "model": model_name,
         "rpm": round(60 / request_interval, 2) if request_interval > 0 else None,
-        "inputTokenLimit": limits.get("input_token_limit"),
-        "maxOutputTokens": _get_gemini_max_output_tokens(model_name),
-        "thinkingLevel": _get_gemini_thinking_level(model_name),
-        "available": gemini_configured,
-        "accent": "Cloud",
+        "contextWindow": limits.get("context_window"),
+        "maxOutputTokens": _get_max_output_tokens(model_name),
+        "available": api_key_set,
+        "accent": "Claude",
     }
 
 
@@ -66,7 +59,7 @@ async def index(request: Request):
         "index.html",
         {
             "request": request,
-            "model_info": _gemini_metadata(),
+            "model_info": _anthropic_metadata(),
         },
     )
 
@@ -74,7 +67,7 @@ async def index(request: Request):
 @app.get("/api/config")
 async def config():
     return {
-        "model": _gemini_metadata(),
+        "model": _anthropic_metadata(),
     }
 
 
@@ -99,7 +92,7 @@ async def run_agent_stream(payload: AgentRequest):
             if sys.platform == "win32":
                 asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
             return asyncio.run(
-                gemini_run_agent(
+                run_agent_core(
                     payload.objective,
                     ui_callback=ui_callback,
                     keep_browser_open=payload.keep_browser_open,

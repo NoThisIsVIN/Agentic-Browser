@@ -1,22 +1,18 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Union, Annotated
 
 
 class AgentBrain(BaseModel):
     evaluation_previous_goal: str = Field(
-        description=(
-            "Evaluate whether the previous next_goal was achieved. Start with Success, Failed, or Unknown, "
-            "then briefly explain why."
-        )
+        description="Success/Failed/Unknown + max 5 words why."
     )
     memory: str = Field(
-        description=(
-            "Short running memory of useful facts and progress that should be remembered across steps."
-        )
+        description="Short bullet-style notes of progress so far."
     )
     next_goal: str = Field(
-        description="The next immediate goal that should be achieved with the upcoming action."
+        description="ONE short phrase for the immediate next goal."
     )
+
 
 class ClickAction(BaseModel):
     action: Literal["click"] = "click"
@@ -48,15 +44,18 @@ class PressAction(BaseModel):
     action: Literal["press"] = "press"
     key: str = Field(description="The keyboard key to press (e.g., 'Escape', 'Enter', 'Tab').")
 
-# --- THE VISION TOOL ---
-class LookAction(BaseModel):
-    action: Literal["look"] = "look"
-    reason: str = Field(description="Why you need to see the screen (e.g., 'To read the math formula' or 'To see the image').")
-# -----------------------
+class WaitAction(BaseModel):
+    action: Literal["wait"] = "wait"
+    reason: str = Field(description="Why you need to wait for the page to settle.")
 
-# --- THE FINAL OUTPUT ---
+ActionType = Union[
+    ClickAction, TypeAction, FinishAction, GotoAction,
+    ReadAction, ScrollAction, PressAction, WaitAction,
+]
+
+
 class AgentOutput(BaseModel):
-    thought: str = Field(description="The agent's internal reasoning.")
-    current_state: AgentBrain = Field(description="Evaluation, memory, and next-goal state for the current step.")
-    command: ClickAction | TypeAction | FinishAction | GotoAction | ReadAction | ScrollAction | PressAction | LookAction
-# ------------------------
+    current_state: AgentBrain = Field(description="Evaluation, memory, and next-goal.")
+    actions: list[ActionType] = Field(
+        description="1-5 browser actions to execute in sequence. Combine related steps (e.g. type + press Enter).",
+    )

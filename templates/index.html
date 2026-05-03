@@ -4,113 +4,97 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Agentic Browser</title>
+  <meta name="description" content="An autonomous AI-powered browser agent that completes web tasks for you.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div class="ambient-layer ambient-grid"></div>
-  <div class="ambient-layer ambient-glow ambient-glow-a"></div>
-  <div class="ambient-layer ambient-glow ambient-glow-b"></div>
-  <div class="ambient-layer ambient-spotlight"></div>
-  <div class="ambient-layer ambient-track ambient-track-a"></div>
-  <div class="ambient-layer ambient-track ambient-track-b"></div>
-
   <div class="page-shell">
-    <header class="topbar">
-      <div class="brand-block">
-        <p class="eyebrow">Project Showcase</p>
-        <h1>Agentic Browser</h1>
+
+    <!-- Top bar -->
+    <header class="topbar" id="topbar">
+      <div class="brand">
+        <svg class="brand-icon" width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect width="28" height="28" rx="8" fill="url(#brandGrad)"/>
+          <path d="M8 14h12M14 8v12" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+          <defs><linearGradient id="brandGrad" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#ff7a18"/><stop offset="1" stop-color="#f94d6a"/></linearGradient></defs>
+        </svg>
+        <span class="brand-name">Agentic Browser</span>
+      </div>
+      <div class="topbar-meta">
+        <span class="model-badge">{{ model_info.label }} · {{ model_info.model }}</span>
+        <span id="run-state" class="state-pill idle">Idle</span>
       </div>
     </header>
 
+    <!-- Main content -->
     <main class="workspace">
-      <section class="landing-panel card">
-        <div class="panel-orbit panel-orbit-a"></div>
-        <div class="panel-orbit panel-orbit-b"></div>
-        <aside class="control-panel">
-          <div class="section-head">
-            <div>
-              <p class="section-kicker">Mission Control</p>
-              <h2>Give the agent a task</h2>
-            </div>
+
+      <!-- Input section -->
+      <section class="input-section">
+        <h1 class="hero-heading">What should the agent do?</h1>
+
+        <form id="agent-form" class="command-form">
+          <div class="input-box">
+            <textarea id="objective" name="objective" rows="3" placeholder="e.g. Open Flipkart, search for 64GB pendrive under ₹700, and list the first three results."></textarea>
+            <button id="run-button" class="run-button" type="submit">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 10h14M12 5l5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
           </div>
 
-          <div class="backend-list">
-            <article class="backend-card active">
-              <span class="backend-topline">
-                <strong>{{ model_info.label }}</strong>
-                <span class="backend-accent">{{ model_info.accent }}</span>
-              </span>
-              <span class="backend-model">{{ model_info.model }}</span>
-              <span class="backend-model">RPM: {{ model_info.rpm }} · Output: {{ model_info.maxOutputTokens }} tokens</span>
-              {% if model_info.contextWindow %}
-              <span class="backend-model">Context: {{ model_info.contextWindow }} tokens</span>
-              {% endif %}
-              <span class="backend-status">{{ model_info.status }}</span>
-            </article>
-          </div>
-
-          <form id="agent-form" class="command-form">
-            <label class="field-label" for="objective">Task prompt</label>
-            <textarea id="objective" name="objective" rows="6" placeholder="Open Flipkart, search for 64GB pendrive under Rs. 700, and tell me the first three results."></textarea>
-
-            <div class="suggestions">
-              <button type="button" class="suggestion-pill">Open Python.org and tell me the first headline on the homepage.</button>
-              <button type="button" class="suggestion-pill">Open YouTube, search for browser automation agent, and tell me the first video title.</button>
-              <button type="button" class="suggestion-pill">Search Amazon India for a wireless mouse under Rs. 1000 and tell me the first three products.</button>
-            </div>
-
+          <div class="input-footer">
             <label class="keep-open-toggle" for="keep-browser-open">
               <input id="keep-browser-open" name="keep-browser-open" type="checkbox">
-              <span>Keep browser open after completion</span>
+              <span>Keep browser open</span>
             </label>
+          </div>
+        </form>
 
-            <button id="run-button" class="run-button" type="submit">Launch Agent</button>
-          </form>
-        </aside>
+
       </section>
 
+      <!-- Results — unified feed -->
       <section id="results-panel" class="results-panel">
-        <article class="card live-panel">
-          <div class="section-head">
-            <div>
-              <p class="section-kicker">Live Feed</p>
-              <h2>Thoughts and actions</h2>
-            </div>
-            <div class="live-status">
-              <div id="status-text" class="status-text">Waiting for a mission.</div>
-              <button id="download-feed" class="feed-download" type="button" disabled>Download feed</button>
-              <div class="pulse-cluster" aria-hidden="true">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-            </div>
-          </div>
-          <div id="updates" class="updates"></div>
-        </article>
 
-        <article id="report-panel" class="card report-panel">
-          <div class="section-head">
-            <div>
-              <p class="section-kicker">Mission Outcome</p>
-              <h2>Final report</h2>
+        <!-- Status bar -->
+        <div class="feed-bar">
+          <div class="feed-bar-left">
+            <div class="pulse-cluster" aria-hidden="true">
+              <span></span><span></span><span></span>
             </div>
+            <span id="status-text" class="status-text">Waiting for a mission.</span>
+          </div>
+          <button id="download-feed" class="feed-download" type="button" disabled>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8m0 0L5 7m3 3l3-3M3 12h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Export
+          </button>
+        </div>
+
+        <!-- Live updates stream -->
+        <div id="updates" class="updates"></div>
+
+        <!-- Final report -->
+        <article id="report-panel" class="report-panel">
+          <div class="report-header">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 1l2.47 5.01L17 6.64l-4 3.9.94 5.5L9 13.77l-4.94 2.27.94-5.5-4-3.9 5.53-.63L9 1z" fill="currentColor"/></svg>
+            <span>Final Report</span>
           </div>
           <div id="final-report" class="final-report">
             The final answer from the agent will appear here.
           </div>
           <div class="preview-wrap">
-            <p class="preview-label">Visual inspection</p>
             <img id="preview-image" class="preview-image hidden" alt="Agent screenshot preview">
             <div id="preview-placeholder" class="preview-placeholder">
-              Screenshots from vision steps will appear here.
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="3" y="5" width="26" height="20" rx="3" stroke="currentColor" stroke-width="1.5"/><circle cx="11" cy="13" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 21l6-5 4 3 6-7 10 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>Screenshots will appear here</span>
             </div>
           </div>
         </article>
+
       </section>
+
     </main>
   </div>
   <script src="/static/app.js"></script>

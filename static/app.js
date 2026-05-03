@@ -13,7 +13,12 @@
   const keepBrowserOpenToggle = document.getElementById("keep-browser-open");
   const downloadFeedButton = document.getElementById("download-feed");
   const suggestionPills = Array.from(document.querySelectorAll(".suggestion-pill"));
-  const pageShell = document.querySelector(".page-shell");
+
+  // Auto-resize textarea as user types (ChatGPT-style)
+  objectiveInput.addEventListener("input", () => {
+    objectiveInput.style.height = "auto";
+    objectiveInput.style.height = Math.min(objectiveInput.scrollHeight, 200) + "px";
+  });
 
   let running = false;
   let currentObjective = "";
@@ -339,23 +344,7 @@
     downloadFeedButton.addEventListener("click", downloadFeed);
   }
 
-  document.addEventListener("pointermove", (event) => {
-    const x = (event.clientX / window.innerWidth) * 100;
-    const y = (event.clientY / window.innerHeight) * 100;
-    document.body.style.setProperty("--pointer-x", `${x}%`);
-    document.body.style.setProperty("--pointer-y", `${y}%`);
-  });
-
-  window.addEventListener(
-    "scroll",
-    () => {
-      const offset = Math.min(window.scrollY * 0.035, 18);
-      if (pageShell) {
-        pageShell.style.transform = `translateY(${offset}px)`;
-      }
-    },
-    { passive: true }
-  );
+  /* Ambient and parallax effects removed for clean UI */
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();

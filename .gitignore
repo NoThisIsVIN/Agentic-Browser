@@ -43,3 +43,7 @@ agent_profile/
 vertex-key.json
 *-key.json
 *.json
+
+# Extensions
+CFHDOJBKJHNKLBPKDAIBDCCDDILIFDDB_4_37_2_0/
+extensions/

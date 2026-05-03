@@ -19,8 +19,10 @@ async def main():
             user_data_dir,
             headless=False,
             channel="chrome", # Forces Playwright to use your actual Google Chrome installation
-            args=["--disable-blink-features=AutomationControlled"], # Masks the bot signature
-            ignore_default_args=["--enable-automation"] # Hides the automation banner
+            args=[
+                "--disable-blink-features=AutomationControlled"
+            ],
+            ignore_default_args=["--enable-automation", "--disable-extensions"] # Hides automation banner and allows extensions
         )
         
         page = context.pages[0]

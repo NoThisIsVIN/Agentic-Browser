@@ -786,8 +786,10 @@ async def run_agent(user_objective, ui_callback=None, keep_browser_open=False):
             user_data_dir,
             headless=False,
             channel="chrome",
-            args=["--disable-blink-features=AutomationControlled"],
-            ignore_default_args=["--enable-automation"],
+            args=[
+                "--disable-blink-features=AutomationControlled"
+            ],
+            ignore_default_args=["--enable-automation", "--disable-extensions"],
         )
 
         page = context.pages[0]

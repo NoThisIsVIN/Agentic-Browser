@@ -264,7 +264,7 @@ async def _adopt_newest_page_if_needed(context, current_page, previous_page_coun
     return current_page
 
 
-async def _adopt_new_tab_after_action(context, current_page, previous_page_count, wait_seconds=2.5):
+async def _adopt_new_tab_after_action(context, current_page, previous_page_count, wait_seconds=0.8):
     adopted_page = current_page
     deadline = asyncio.get_running_loop().time() + wait_seconds
 
@@ -280,7 +280,7 @@ async def _adopt_new_tab_after_action(context, current_page, previous_page_count
             ):
                 adopted_page = newest_page
                 break
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
     adopted_page = await _adopt_newest_page_if_needed(context, adopted_page, previous_page_count)
     if adopted_page and not adopted_page.is_closed():
@@ -291,9 +291,9 @@ async def _adopt_new_tab_after_action(context, current_page, previous_page_count
     return adopted_page
 
 
-async def _settle_page(page, delay_seconds=2):
+async def _settle_page(page, delay_seconds=0.3):
     try:
-        await page.wait_for_load_state("domcontentloaded", timeout=3000)
+        await page.wait_for_load_state("domcontentloaded", timeout=2000)
     except Exception:
         pass
     await asyncio.sleep(delay_seconds)
@@ -981,7 +981,7 @@ Goal: {user_objective}"""
                         target_url = direct_site_url
                     try:
                         await page.goto(target_url)
-                        await _settle_page(page, delay_seconds=1.5)
+                        await _settle_page(page, delay_seconds=0.5)
                     except Exception as exc:
                         error_text = str(exc)
                         if "ERR_NAME_NOT_RESOLVED" in error_text:
@@ -1031,10 +1031,10 @@ Goal: {user_objective}"""
 
                     await page.keyboard.press("Control+A")
                     await page.keyboard.press("Backspace")
-                    await page.keyboard.type(text_to_type, delay=10)
+                    await page.keyboard.type(text_to_type, delay=2)
 
                     page = await _adopt_new_tab_after_action(context, page, previous_page_count)
-                    await _settle_page(page, delay_seconds=1)
+                    await _settle_page(page, delay_seconds=0.3)
                     last_typed_text = text_to_type
                     last_typed_field = element_label
                     last_typed_url = current_url
@@ -1053,12 +1053,12 @@ Goal: {user_objective}"""
                         needs_vision = True
                         break
                     page = await _adopt_new_tab_after_action(context, page, previous_page_count)
-                    await _settle_page(page, delay_seconds=1)
+                    await _settle_page(page, delay_seconds=0.3)
                     last_action_result = f"Clicked '{element_label}'."
                     action_history.append(f"Clicked '{element_label}' (Step {step_count})")
 
                 # Brief pause between multi-actions
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.05)
 
             step_count += 1
             if should_break:

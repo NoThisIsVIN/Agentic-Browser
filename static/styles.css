@@ -544,7 +544,7 @@ body.running-mode .updates {
 }
 
 body.running-mode .run-button {
-  animation: runSpin 1.6s linear infinite;
+  /* Animation removed */
 }
 
 /* ── Result mode ──────────────────────────────────────────── */
@@ -634,10 +634,6 @@ body.result-mode .final-report {
   }
 }
 
-@keyframes runSpin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
 
 /* Legacy class compatibility – these classes may be referenced
    by the JS but no longer have visible styled counterparts. */

@@ -593,22 +593,7 @@ def _finalize_report(report_text, user_objective):
         if report.lower().startswith(old.lower()):
             report = new + report[len(old):]
 
-    if _should_return_structured_results(user_objective):
-        structured_lines = _normalize_report_lines(report)
-        if structured_lines:
-            return "\n".join(structured_lines[:3])
-
-    flattened_report = " ".join(report.split())
-    if len(flattened_report) > 260:
-        sentences = [
-            segment.strip()
-            for segment in report.replace("!", ".").replace("?", ".").split(".")
-            if segment.strip()
-        ]
-        if sentences:
-            flattened_report = sentences[0]
-
-    return flattened_report[:260].rstrip(". ") + "."
+    return report
 
 
 def _fingerprint_dom(dom_data):

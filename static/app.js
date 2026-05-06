@@ -16,8 +16,21 @@
 
   // Auto-resize textarea as user types (ChatGPT-style)
   objectiveInput.addEventListener("input", () => {
+    // Save current height
+    const currentHeight = objectiveInput.style.height;
+    // Temporarily set height to auto to get actual scrollHeight without transition
+    objectiveInput.style.transition = 'none';
     objectiveInput.style.height = "auto";
-    objectiveInput.style.height = Math.min(objectiveInput.scrollHeight, 200) + "px";
+    const targetHeight = Math.min(objectiveInput.scrollHeight, 800) + "px";
+    
+    // Revert to old height
+    objectiveInput.style.height = currentHeight;
+    // Force layout recalculation
+    void objectiveInput.offsetHeight;
+    
+    // Restore transition and apply new height
+    objectiveInput.style.transition = 'height 0.2s ease-in-out';
+    objectiveInput.style.height = targetHeight;
   });
 
   let running = false;

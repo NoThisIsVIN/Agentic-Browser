@@ -176,13 +176,14 @@ textarea {
   background: transparent;
   padding: 16px 56px 16px 18px;
   min-height: 64px;
-  max-height: 200px;
+  max-height: 800px;
   resize: none;
   font: inherit;
   font-size: 0.95rem;
   color: var(--ink);
   line-height: 1.55;
   outline: none;
+  transition: height 0.2s ease-in-out;
 }
 
 textarea::placeholder {
@@ -354,8 +355,8 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-height: 80px;
-  max-height: 520px;
+  min-height: 150px;
+  max-height: 800px;
   overflow-y: auto;
   padding-right: 4px;
   scrollbar-width: thin;
@@ -539,8 +540,8 @@ body.running-mode .input-section {
 }
 
 body.running-mode .updates {
-  min-height: 320px;
-  max-height: 600px;
+  min-height: 400px;
+  max-height: 800px;
 }
 
 body.running-mode .run-button {
